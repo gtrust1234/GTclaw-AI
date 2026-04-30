@@ -1,0 +1,23 @@
+{
+  "budget_daily_usd": 1.0,
+  "budget_monthly_usd": 20.0,
+  "budget_alerts_enabled": true,
+  "command_execution_enabled": true,
+  "command_timeout_seconds": 30,
+  "auto_memory_extraction": true,
+  "memory_extraction_interval": 5,
+  "max_history_messages": 40,
+  "cheap_model": "claude-haiku-4-5-20251001",
+  "smart_model": "claude-sonnet-4-6",
+  "max_tokens_response": 1024,
+  "blocked_commands": [
+    "format",
+    "diskpart",
+    "cipher /w",
+    "net user /add",
+    "shutdown",
+    "Restart-Computer"
+  ],
+  "farm_lat": -37.78,
+  "farm_lon": 175.28
+}

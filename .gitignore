@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# PyInstaller build artefacts
+build/
+dist/
+*.spec
+
+# Installer output (distributed via GitHub Releases, not committed)
+installer_output/
+
+# Sensitive config — users fill these in after install
+config/config.json
+.env
+
+# Logs and database
+*.log
+build_*.log
+build_log.txt
+*.db
+*.db-wal
+*.db-shm
+
+# OS artefacts
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+*.swp
