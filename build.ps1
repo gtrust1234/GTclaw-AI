@@ -59,7 +59,7 @@ Write-Host "Building GTclawDashboard.exe..." -ForegroundColor Cyan
     --workpath "$root\build\dashboard" `
     (Join-Path $root "dashboard.py")
 
-if ($LASTEXITCODE -ne 0) { Write-Error "Dashboard build failed"; exit 1 }
+if (-not (Test-Path "$root\dist\GTclawDashboard.exe")) { Write-Error "Dashboard build failed (EXE not found)"; exit 1 }
 
 # ── Build service EXE ─────────────────────────────────────────────────────────
 Write-Host "Building GTclawService.exe..." -ForegroundColor Cyan
@@ -78,9 +78,10 @@ Write-Host "Building GTclawService.exe..." -ForegroundColor Cyan
     --hidden-import "config_manager" `
     --hidden-import "claude_client" `
     --hidden-import "terminal_executor" `
+    --hidden-import "email_scanner" `
     (Join-Path $root "service.py")
 
-if ($LASTEXITCODE -ne 0) { Write-Error "Service build failed"; exit 1 }
+if (-not (Test-Path "$root\dist\GTclawService.exe")) { Write-Error "Service build failed (EXE not found)"; exit 1 }
 
 Write-Host "EXE build complete:" -ForegroundColor Green
 Write-Host "  Dashboard: $root\dist\GTclawDashboard.exe"

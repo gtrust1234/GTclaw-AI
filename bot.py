@@ -25,6 +25,7 @@ from memory import MemoryManager
 from claude_client import ClaudeClient
 from briefing import generate_briefing
 from terminal_executor import execute_command
+from email_scanner import EmailScanner
 
 # ── Bootstrap config (merges .env → config.json on first run) ────────────────
 cfg = get_config()
@@ -45,6 +46,7 @@ logger = logging.getLogger(__name__)
 memory = MemoryManager()
 claude = ClaudeClient()
 scheduler = AsyncIOScheduler()
+email_scanner = EmailScanner(memory.db, claude, cfg)
 
 # ── User files folder ─────────────────────────────────────────────────────────
 import ctypes.wintypes, ctypes
@@ -77,6 +79,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/forget <topic> — delete matching memories\n"
         "/facts — show structured user facts\n"
         "/reminders — list pending reminders\n"
+        "/emails — scan inbox for bills & payment reminders\n"
         "/cmd <command> — run a Windows command\n"
         "/usage — API usage & cost summary\n"
         "/briefing — get your daily briefing\n"
@@ -247,6 +250,54 @@ async def list_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
 
 
+# ── Email scan command & scheduled job ───────────────────────────────────────────
+
+async def emails_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Manually trigger an inbox scan for bills and payment notices."""
+    if not is_authorised(update):
+        return
+    if not cfg.config.get("email_address"):
+        await update.message.reply_text(
+            "📧 Email monitoring is not configured.\n"
+            "Open the Dashboard → Settings → Email Monitoring and enter your IMAP details.",
+        )
+        return
+    await update.message.reply_text("📬 Scanning your inbox for bills…")
+    try:
+        found = await email_scanner.scan()
+        if found:
+            lines = "\n".join(f"• {n}" for n in found)
+            await update.message.reply_text(
+                f"✅ Found {len(found)} bill(s). Reminders created:\n\n{lines}",
+            )
+        else:
+            await update.message.reply_text("✅ No new bills found in the last 7 days.")
+    except Exception as exc:
+        logger.error("emails_command scan error: %s", exc)
+        await update.message.reply_text(
+            f"❌ Scan failed: {str(exc)[:200]}\n\n"
+            "Check your IMAP server, address and password in Settings.",
+        )
+
+
+async def email_scan_job(app: Application) -> None:
+    """Scheduled email scan — sends Telegram notifications for any new bills."""
+    if not cfg.config.get("email_enabled", False):
+        return
+    if not cfg.config.get("email_address"):
+        return
+    try:
+        found = await email_scanner.scan()
+        for notif in found:
+            await app.bot.send_message(
+                chat_id=cfg.get_telegram_user_id(),
+                text=f"📧 *Bill detected:* {notif}",
+                parse_mode="Markdown",
+            )
+    except Exception as exc:
+        logger.error("Scheduled email scan error: %s", exc)
+
+
 # ── Background reminder checker ──────────────────────────────────────────────────
 
 async def check_reminders(app: Application) -> None:
@@ -396,6 +447,14 @@ def main() -> None:
             seconds=60,
             args=[application],
         )
+        # Email scan — only add job if credentials are present
+        if cfg.config.get("email_address"):
+            scan_hours = int(cfg.config.get("email_scan_interval_hours", 3))
+            scheduler.add_job(
+                email_scan_job, "interval",
+                hours=scan_hours,
+                args=[application],
+            )
         scheduler.start()
         logger.info(f"Bot started. Daily briefing at {briefing_time}.")
 
@@ -417,6 +476,7 @@ def main() -> None:
     app.add_handler(CommandHandler("cmd", cmd_command))
     app.add_handler(CommandHandler("usage", usage_command))
     app.add_handler(CommandHandler("reminders", list_reminders))
+    app.add_handler(CommandHandler("emails", emails_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     app.run_polling(allowed_updates=Update.ALL_TYPES)

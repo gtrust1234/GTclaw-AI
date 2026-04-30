@@ -4,5 +4,8 @@
   "telegram_user_id": 0,
   "db_path": "",
   "log_dir": "",
-  "tavily_api_key": ""
+  "tavily_api_key": "",
+  "email_imap_server": "",
+  "email_address": "",
+  "email_password": ""
 }

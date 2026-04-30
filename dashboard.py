@@ -1309,6 +1309,41 @@ class Dashboard(QMainWindow):
         f6.addRow("", tavily_link)
         lay.addWidget(grp6)
 
+        # ── Email Monitoring ───────────────────────────────────────────────────
+        grp7 = QGroupBox("Email Monitoring (bill & payment reminders)")
+        f7 = QFormLayout(grp7)
+        f7.setContentsMargins(16, 20, 16, 16)
+        f7.setSpacing(12)
+
+        self._s_email_enabled = QCheckBox("Enable automatic inbox scanning")
+        imap_hint = QLabel(
+            "Gmail: imap.gmail.com  |  Outlook: imap-mail.outlook.com  |  Yahoo: imap.mail.yahoo.com\n"
+            "Gmail requires an App Password (Google Account → Security → 2-Step → App passwords)"
+        )
+        imap_hint.setStyleSheet(f"color:{MUTED}; font-size:11px; background:transparent; border:none;")
+        imap_hint.setWordWrap(True)
+
+        self._s_imap_server = QLineEdit()
+        self._s_imap_server.setPlaceholderText("e.g. imap.gmail.com")
+        self._s_email_addr = QLineEdit()
+        self._s_email_addr.setPlaceholderText("your.email@gmail.com")
+        self._s_email_pass = QLineEdit()
+        self._s_email_pass.setEchoMode(QLineEdit.Password)
+        self._s_email_pass.setPlaceholderText("App Password (16 chars for Gmail)")
+
+        self._s_email_scan_hours = QSpinBox()
+        self._s_email_scan_hours.setRange(1, 24)
+        self._s_email_scan_hours.setValue(3)
+        self._s_email_scan_hours.setSuffix(" hours")
+
+        f7.addRow("", self._s_email_enabled)
+        f7.addRow("", imap_hint)
+        f7.addRow("IMAP Server:", self._s_imap_server)
+        f7.addRow("Email Address:", self._s_email_addr)
+        f7.addRow("Password:", _secret_row(self._s_email_pass))
+        f7.addRow("Scan Every:", self._s_email_scan_hours)
+        lay.addWidget(grp7)
+
         lay.addStretch()
 
         self._tabs.addTab(scroll, "Settings")
@@ -1682,6 +1717,14 @@ class Dashboard(QMainWindow):
         self._s_farm_lat.setValue(float(self._cfg.settings.get("farm_lat", -37.78)))
         self._s_farm_lon.setValue(float(self._cfg.settings.get("farm_lon", 175.28)))
         self._s_tavily_key.setText(self._cfg.config.get("tavily_api_key", ""))
+        # Email monitoring
+        self._s_email_enabled.setChecked(self._cfg.config.get("email_enabled", False))
+        self._s_imap_server.setText(self._cfg.config.get("email_imap_server", ""))
+        self._s_email_addr.setText(self._cfg.config.get("email_address", ""))
+        self._s_email_pass.setText(self._cfg.config.get("email_password", ""))
+        self._s_email_scan_hours.setValue(
+            int(self._cfg.config.get("email_scan_interval_hours", 3))
+        )
 
     # ─────────────────────────────────────────────────────────────────────────
     # Bot control
@@ -1859,10 +1902,18 @@ class Dashboard(QMainWindow):
         self._cfg.settings["farm_lon"]                  = self._s_farm_lon.value()
         self._cfg.save_identity()
         self._cfg.save_settings()
-        # Save all config changes (API keys + Tavily)
+        # Save all config changes (API keys + Tavily + Email)
         tavily = self._s_tavily_key.text().strip()
         if tavily:
             self._cfg.config["tavily_api_key"] = tavily
+        # Email monitoring
+        self._cfg.config["email_enabled"]              = self._s_email_enabled.isChecked()
+        self._cfg.config["email_imap_server"]          = self._s_imap_server.text().strip()
+        self._cfg.config["email_address"]              = self._s_email_addr.text().strip()
+        email_pass = self._s_email_pass.text().strip()
+        if email_pass:
+            self._cfg.config["email_password"]         = email_pass
+        self._cfg.config["email_scan_interval_hours"]  = self._s_email_scan_hours.value()
         self._cfg.save_config()
 
         # Auto-restart the bot so it picks up the new keys/settings immediately

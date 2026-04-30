@@ -30,6 +30,10 @@ CONFIG_DEFAULTS: Dict[str, Any] = {
     "telegram_user_id": 0,
     "db_path": str(Path.home() / "assistant_data" / "memory.db"),
     "log_dir": str(Path.home() / "assistant_logs"),
+    # Email monitoring
+    "email_imap_server": "",
+    "email_address": "",
+    "email_password": "",
 }
 
 IDENTITY_DEFAULTS: Dict[str, Any] = {
@@ -48,7 +52,18 @@ IDENTITY_DEFAULTS: Dict[str, Any] = {
         "- Use markdown formatting sparingly (Telegram renders *bold*, _italic_, `code`)\n"
         "- If the user shares facts about themselves, acknowledge you'll remember them\n"
         "- You can execute Windows commands when helpful — use the run_command tool\n"
-        "- You have access to the user's memories injected at conversation start"
+        "- You have access to the user's memories injected at conversation start\n\n"
+        "### Email monitoring & bill reminders\n"
+        "The bot automatically scans the user's email inbox (via IMAP) every few hours "
+        "looking for bills, invoices, subscription renewals, and payment notices. "
+        "When one is detected, a reminder is created so the user gets a Telegram notification "
+        "before the due date.\n\n"
+        "- Use /emails to trigger an immediate inbox scan\n"
+        "- Email credentials are configured in the Dashboard → Settings → Email Monitoring\n"
+        "- Supported: Gmail (App Password), Outlook, Yahoo, any IMAP server\n\n"
+        "If the user asks whether you can monitor emails, check for bills, or set up payment "
+        "reminders — yes, you can. Tell them to configure their email in Dashboard settings "
+        "and use /emails to scan."
     ),
 }
 
@@ -68,6 +83,9 @@ SETTINGS_DEFAULTS: Dict[str, Any] = {
         "format", "diskpart", "cipher /w",
         "net user /add", "shutdown", "Restart-Computer",
     ],
+    # Email monitoring
+    "email_enabled": False,
+    "email_scan_interval_hours": 3,
 }
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
