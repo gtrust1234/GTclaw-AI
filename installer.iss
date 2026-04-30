@@ -48,7 +48,7 @@ Source: "logo.ico";         DestDir: "{app}"; Flags: ignoreversion
 Source: "logo_wizard.bmp";  DestDir: "{app}"; Flags: ignoreversion
 
 ; Default config templates (onlyifdoesntexist preserves settings on upgrades)
-Source: "config\config.json";    DestDir: "{app}\config"; Flags: onlyifdoesntexist
+Source: "config\config.template.json"; DestDir: "{app}\config"; DestName: "config.json"; Flags: onlyifdoesntexist
 Source: "config\identity.json";  DestDir: "{app}\config"; Flags: onlyifdoesntexist
 Source: "config\settings.json";  DestDir: "{app}\config"; Flags: onlyifdoesntexist
 

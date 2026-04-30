@@ -1,0 +1,8 @@
+{
+  "anthropic_api_key": "",
+  "telegram_token": "",
+  "telegram_user_id": 0,
+  "db_path": "",
+  "log_dir": "",
+  "tavily_api_key": ""
+}

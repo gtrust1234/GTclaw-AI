@@ -66,11 +66,18 @@ Write-Host "Building GTclawService.exe..." -ForegroundColor Cyan
 & $pyinstaller `
     --noconfirm `
     --onefile `
-    --console `
+    --windowed `
     --name "GTclawService" `
     --icon "$root\logo.ico" `
     --distpath "$root\dist" `
     --workpath "$root\build\service" `
+    --hidden-import "bot" `
+    --hidden-import "briefing" `
+    --hidden-import "memory" `
+    --hidden-import "database" `
+    --hidden-import "config_manager" `
+    --hidden-import "claude_client" `
+    --hidden-import "terminal_executor" `
     (Join-Path $root "service.py")
 
 if ($LASTEXITCODE -ne 0) { Write-Error "Service build failed"; exit 1 }
@@ -89,7 +96,7 @@ if ($Installer) {
     $iscc = $iscc_paths | Where-Object { Test-Path $_ } | Select-Object -First 1
 
     if (-not $iscc) {
-        Write-Warning "Inno Setup 6 not found — skipping installer build."
+        Write-Warning "Inno Setup 6 not found -- skipping installer build."
         Write-Warning "Download from: https://jrsoftware.org/isinfo.php"
         Write-Warning "Then re-run:   .\build.ps1 -Installer"
     } else {

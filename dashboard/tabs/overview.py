@@ -17,6 +17,24 @@ from config_manager import get_config
 
 SERVICE_NAME = "PersonalAIAssistant"
 
+_ROOT = Path(__file__).parent.parent.parent
+_PYTHON_EXE = str(_ROOT / ".venv" / "Scripts" / "python.exe")
+_BOT_SCRIPT = str(_ROOT / "bot.py")
+
+# Shared process handle for direct (non-service) mode
+_direct_proc: subprocess.Popen | None = None
+
+
+def _service_installed() -> bool:
+    try:
+        result = subprocess.run(
+            ["sc", "query", SERVICE_NAME],
+            capture_output=True, text=True, timeout=5
+        )
+        return "RUNNING" in result.stdout or "STOPPED" in result.stdout
+    except Exception:
+        return False
+
 
 def _service_status() -> str:
     try:
@@ -31,6 +49,16 @@ def _service_status() -> str:
         return "NOT INSTALLED"
     except Exception:
         return "UNKNOWN"
+
+
+def _direct_status() -> str:
+    global _direct_proc
+    if _direct_proc is None:
+        return "STOPPED"
+    if _direct_proc.poll() is None:
+        return "RUNNING"
+    _direct_proc = None
+    return "STOPPED"
 
 
 class OverviewTab(QWidget):
@@ -100,10 +128,15 @@ class OverviewTab(QWidget):
 
     def _refresh(self) -> None:
         # Service status
-        status = _service_status()
+        if _service_installed():
+            status = _service_status()
+            mode_suffix = " (service)"
+        else:
+            status = _direct_status()
+            mode_suffix = " (direct)"
         colors = {"RUNNING": "#2ecc71", "STOPPED": "#e74c3c",
                   "NOT INSTALLED": "#f39c12", "UNKNOWN": "#95a5a6"}
-        self._status_lbl.setText(f"Status: {status}")
+        self._status_lbl.setText(f"Status: {status}{mode_suffix}")
         self._status_lbl.setStyleSheet(
             f"font-weight: bold; font-size: 14px; color: {colors.get(status, '#fff')};"
         )
@@ -130,7 +163,7 @@ class OverviewTab(QWidget):
             )
         self._activity_log.setPlainText("\n".join(lines) or "No API calls yet.")
 
-    # ── Service control ───────────────────────────────────────────────────────
+    # ── Service / direct control ──────────────────────────────────────────────
 
     def _svc_cmd(self, action: str) -> None:
         try:
@@ -140,11 +173,31 @@ class OverviewTab(QWidget):
         self._refresh()
 
     def _start_svc(self) -> None:
-        self._svc_cmd("start")
+        global _direct_proc
+        if _service_installed():
+            self._svc_cmd("start")
+        else:
+            if _direct_proc is None or _direct_proc.poll() is not None:
+                _direct_proc = subprocess.Popen(
+                    [_PYTHON_EXE, _BOT_SCRIPT],
+                    cwd=str(_ROOT),
+                )
+            self._refresh()
 
     def _stop_svc(self) -> None:
-        self._svc_cmd("stop")
+        global _direct_proc
+        if _service_installed():
+            self._svc_cmd("stop")
+        else:
+            if _direct_proc is not None and _direct_proc.poll() is None:
+                _direct_proc.terminate()
+                try:
+                    _direct_proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    _direct_proc.kill()
+            _direct_proc = None
+            self._refresh()
 
     def _restart_svc(self) -> None:
-        self._svc_cmd("stop")
-        self._svc_cmd("start")
+        self._stop_svc()
+        self._start_svc()

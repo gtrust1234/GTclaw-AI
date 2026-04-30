@@ -17,8 +17,67 @@ from PyQt5.QtWidgets import (
     QComboBox, QTextEdit, QMessageBox, QSizePolicy,
     QDialog, QDialogButtonBox, QTextBrowser, QProgressBar,
 )
-from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
-from PyQt5.QtGui import QFont, QColor, QIcon
+from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QRect
+from PyQt5.QtGui import QFont, QColor, QIcon, QPainter, QPen
+
+# ── Cost bar chart widget ─────────────────────────────────────────────────────
+class CostBarChart(QWidget):
+    """Simple daily cost bar chart using QPainter."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._data = []  # list of (date_str, cost_usd)
+        self.setMinimumHeight(150)
+
+    def set_data(self, data):
+        self._data = data
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        W, H = self.width(), self.height()
+        PL, PR, PT, PB = 48, 8, 8, 24
+        cw = W - PL - PR
+        ch = H - PT - PB
+
+        p.fillRect(0, 0, W, H, QColor("#0d1117"))
+
+        if not self._data:
+            p.setPen(QColor("#8b949e"))
+            p.drawText(QRect(0, 0, W, H), Qt.AlignCenter, "No data")
+            return
+
+        max_cost = max((c for _, c in self._data), default=0.001) or 0.001
+        n = len(self._data)
+        slot = max(1, cw // n)
+        bar_w = max(2, slot - 2)
+
+        # grid lines
+        p.setPen(QPen(QColor("#30363d"), 1, Qt.DotLine))
+        for frac in (0.25, 0.5, 0.75, 1.0):
+            y = PT + int(ch * (1 - frac))
+            p.drawLine(PL, y, W - PR, y)
+            p.setPen(QColor("#8b949e"))
+            p.setFont(QFont("Segoe UI", 7))
+            p.drawText(QRect(0, y - 8, PL - 2, 16), Qt.AlignRight | Qt.AlignVCenter,
+                       f"${max_cost * frac:.3f}")
+            p.setPen(QPen(QColor("#30363d"), 1, Qt.DotLine))
+
+        # bars
+        for i, (label, cost) in enumerate(self._data):
+            x = PL + i * slot
+            bh = max(1, int((cost / max_cost) * ch)) if cost > 0 else 0
+            y = PT + ch - bh
+            color = QColor("#3fb950") if cost < 0.05 else QColor("#d29922") if cost < 0.20 else QColor("#f85149")
+            p.fillRect(x, y, bar_w, bh, color)
+
+            # x-axis label every 7 days and last bar
+            if i % 7 == 0 or i == n - 1:
+                p.setPen(QColor("#8b949e"))
+                p.setFont(QFont("Segoe UI", 7))
+                p.drawText(QRect(x - 12, H - PB + 4, 40, 14), Qt.AlignLeft, label[5:])
+
+        p.end()
 
 # ── Add project root so we can import project modules ─────────────────────────
 # When frozen by PyInstaller, __file__ is in a temp dir — use the EXE's directory.
@@ -162,37 +221,39 @@ QScrollArea {{ border: none; }}
 def get_bot_pid() -> int | None:
     """Return PID of the running bot service (GTclawService.exe or service.py), or None."""
     try:
-        # Check for installed EXE first
+        # Check for GTclawService.exe process via tasklist (wmic is deprecated)
         result = subprocess.run(
-            ["wmic", "process", "where", "name='GTclawService.exe'",
-             "get", "ProcessId", "/FORMAT:CSV"],
+            ["tasklist", "/FI", "IMAGENAME eq GTclawService.exe", "/FO", "CSV", "/NH"],
             capture_output=True, text=True, timeout=5,
             creationflags=0x08000000,
         )
         for line in result.stdout.splitlines():
             line = line.strip()
-            if line and not line.startswith("Node"):
-                parts = [p.strip() for p in line.split(",")]
+            if line and "INFO:" not in line:
+                parts = [p.strip('"') for p in line.split('","')]
                 try:
-                    pid = int(parts[-1])
-                    if pid > 0:
-                        return pid
-                except ValueError:
+                    if len(parts) >= 2:
+                        pid = int(parts[1])
+                        if pid > 0:
+                            return pid
+                except (ValueError, IndexError):
                     pass
-        # Fall back to python.exe running service.py (dev mode)
+
+        # Fall back: use PowerShell CIM to find python.exe running bot/service
+        ps_cmd = (
+            "Get-CimInstance Win32_Process -Filter \"name='python.exe'\" | "
+            "Where-Object { $_.CommandLine -match 'bot\\.py|service\\.py' -and "
+            "$_.CommandLine -notmatch 'dashboard' } | "
+            "Select-Object -First 1 -ExpandProperty ProcessId"
+        )
         result = subprocess.run(
-            ["wmic", "process", "where", "name='python.exe'",
-             "get", "ProcessId,CommandLine", "/FORMAT:CSV"],
-            capture_output=True, text=True, timeout=5,
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+            capture_output=True, text=True, timeout=10,
             creationflags=0x08000000,
         )
-        for line in result.stdout.splitlines():
-            if ("service.py" in line or "bot.py" in line) and "dashboard" not in line:
-                parts = [p.strip() for p in line.split(",")]
-                try:
-                    return int(parts[-1])
-                except ValueError:
-                    pass
+        pid_str = result.stdout.strip()
+        if pid_str.isdigit():
+            return int(pid_str)
     except Exception:
         pass
     return None
@@ -679,6 +740,14 @@ class Dashboard(QMainWindow):
             cards.addWidget(c)
         lay.addLayout(cards)
 
+        # ── Cost chart ────────────────────────────────────────────────────────
+        chart_grp = QGroupBox("Daily Cost — Last 30 Days")
+        chart_lay = QVBoxLayout(chart_grp)
+        chart_lay.setContentsMargins(12, 16, 12, 8)
+        self._cost_chart = CostBarChart()
+        chart_lay.addWidget(self._cost_chart)
+        lay.addWidget(chart_grp)
+
         grp = QGroupBox("API Call Log (last 100)")
         g = QVBoxLayout(grp)
         g.setContentsMargins(12, 16, 12, 12)
@@ -1045,6 +1114,31 @@ class Dashboard(QMainWindow):
             lbl.setStyleSheet("background:transparent; border:none; font-size:11px;")
             return lbl
 
+        def _secret_row(field: QLineEdit) -> QWidget:
+            """Wrap a password field with show/hide toggle and copy-to-clipboard button."""
+            w = QWidget()
+            row = QHBoxLayout(w)
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(4)
+            row.addWidget(field, stretch=1)
+            btn_show = QPushButton("Show")
+            btn_show.setFixedHeight(28)
+            btn_show.setMinimumWidth(52)
+            btn_show.setCheckable(True)
+            btn_show.setToolTip("Show / hide key")
+            def _toggle(checked, f=field, b=btn_show):
+                f.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password)
+                b.setText("Hide" if checked else "Show")
+            btn_show.toggled.connect(_toggle)
+            btn_copy = QPushButton("Copy")
+            btn_copy.setFixedHeight(28)
+            btn_copy.setMinimumWidth(52)
+            btn_copy.setToolTip("Copy to clipboard")
+            btn_copy.clicked.connect(lambda _=False, f=field: QApplication.clipboard().setText(f.text()))
+            row.addWidget(btn_show)
+            row.addWidget(btn_copy)
+            return w
+
         self._s_anthropic_key = QLineEdit()
         self._s_anthropic_key.setEchoMode(QLineEdit.Password)
         self._s_anthropic_key.setPlaceholderText("sk-ant-...")
@@ -1069,17 +1163,33 @@ class Dashboard(QMainWindow):
         )
 
         tg_row = QHBoxLayout()
-        tg_row.setSpacing(8)
+        tg_row.setSpacing(4)
         tg_row.addWidget(self._s_tg_token, stretch=1)
-        tg_wizard_btn = QPushButton("🤖 Wizard")
+        tg_show_btn = QPushButton("Show")
+        tg_show_btn.setFixedHeight(28)
+        tg_show_btn.setMinimumWidth(52)
+        tg_show_btn.setCheckable(True)
+        tg_show_btn.setToolTip("Show / hide token")
+        def _tg_toggle(checked):
+            self._s_tg_token.setEchoMode(QLineEdit.Normal if checked else QLineEdit.Password)
+            tg_show_btn.setText("Hide" if checked else "Show")
+        tg_show_btn.toggled.connect(_tg_toggle)
+        tg_copy_btn = QPushButton("Copy")
+        tg_copy_btn.setFixedHeight(28)
+        tg_copy_btn.setMinimumWidth(52)
+        tg_copy_btn.setToolTip("Copy to clipboard")
+        tg_copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(self._s_tg_token.text()))
+        tg_wizard_btn = QPushButton("Setup Wizard")
         tg_wizard_btn.setFixedHeight(30)
         tg_wizard_btn.setToolTip("Step-by-step Telegram bot setup")
         tg_wizard_btn.clicked.connect(self._open_telegram_wizard)
+        tg_row.addWidget(tg_show_btn)
+        tg_row.addWidget(tg_copy_btn)
         tg_row.addWidget(tg_wizard_btn)
         tg_widget = QWidget()
         tg_widget.setLayout(tg_row)
 
-        f_api.addRow("Anthropic API Key:", self._s_anthropic_key)
+        f_api.addRow("Anthropic API Key:", _secret_row(self._s_anthropic_key))
         f_api.addRow("", anthropic_link)
         f_api.addRow("Telegram Bot Token:", tg_widget)
         f_api.addRow("", tg_token_link)
@@ -1195,7 +1305,7 @@ class Dashboard(QMainWindow):
         )
         tavily_link.setOpenExternalLinks(True)
         tavily_link.setStyleSheet("background:transparent; border:none; font-size:11px;")
-        f6.addRow("API Key:", self._s_tavily_key)
+        f6.addRow("API Key:", _secret_row(self._s_tavily_key))
         f6.addRow("", tavily_link)
         lay.addWidget(grp6)
 
@@ -1364,11 +1474,35 @@ class Dashboard(QMainWindow):
                     FROM api_usage ORDER BY timestamp DESC LIMIT 100
                 """).fetchall()
 
-            self._u_today.set_value(fmt_cost(c_today), GREEN if c_today < 0.5 else YELLOW)
-            self._u_week.set_value(fmt_cost(c_week),   YELLOW if c_week > 1 else TEXT)
-            self._u_month.set_value(fmt_cost(c_month), RED if c_month > 10 else YELLOW)
-            self._u_total.set_value(fmt_cost(c_total), RED if c_total > 20 else TEXT)
+                # daily chart — last 30 days
+                today_date = now.date()
+                daily = []
+                for d in range(29, -1, -1):
+                    day = today_date - timedelta(days=d)
+                    day_start = f"{day}T00:00:00"
+                    day_end   = f"{day}T23:59:59"
+                    dc = conn.execute(
+                        "SELECT COALESCE(SUM(cost_usd),0) FROM api_usage WHERE timestamp>=? AND timestamp<=?",
+                        (day_start, day_end)
+                    ).fetchone()[0]
+                    daily.append((str(day), dc))
+
+                breakdown = conn.execute("""
+                    SELECT COALESCE(purpose,'chat') || '  /  ' || model AS label,
+                           COUNT(*) AS calls,
+                           COALESCE(SUM(input_tokens+output_tokens),0) AS total_tokens,
+                           COALESCE(SUM(cost_usd),0) AS cost
+                    FROM api_usage
+                    GROUP BY COALESCE(purpose,'chat'), model
+                    ORDER BY cost DESC
+                """).fetchall()
+
+            self._u_today.set_value(fmt_cost(c_today),  GREEN  if c_today  < 0.10 else YELLOW if c_today  < 0.50 else RED)
+            self._u_week.set_value(fmt_cost(c_week),    GREEN  if c_week   < 0.50 else YELLOW if c_week   < 2.00 else RED)
+            self._u_month.set_value(fmt_cost(c_month),  GREEN  if c_month  < 2.00 else YELLOW if c_month  < 10.0 else RED)
+            self._u_total.set_value(fmt_cost(c_total),  GREEN  if c_total  < 5.00 else YELLOW if c_total  < 20.0 else RED)
             self._u_calls.set_value(f"{n_calls:,}", BLUE)
+            self._cost_chart.set_data(daily)
 
             self._usage_table.setRowCount(len(rows))
             for r, row in enumerate(rows):
@@ -1379,16 +1513,6 @@ class Dashboard(QMainWindow):
                     fmt_cost(row[5]), f"{row[6] or 0}ms",
                 ], colors=[MUTED, BLUE, MUTED, None, None, cc, MUTED])
 
-            # Breakdown by purpose/model
-            breakdown = conn.execute("""
-                SELECT COALESCE(purpose,'chat') || '  /  ' || model AS label,
-                       COUNT(*) AS calls,
-                       COALESCE(SUM(input_tokens+output_tokens),0) AS total_tokens,
-                       COALESCE(SUM(cost_usd),0) AS cost
-                FROM api_usage
-                GROUP BY COALESCE(purpose,'chat'), model
-                ORDER BY cost DESC
-            """).fetchall()
             self._usage_breakdown_table.setRowCount(len(breakdown))
             for r, row in enumerate(breakdown):
                 cc = GREEN if row[3] < 0.001 else YELLOW if row[3] < 0.01 else RED
@@ -1564,33 +1688,52 @@ class Dashboard(QMainWindow):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _start_bot(self):
-        app_dir = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
-        service_exe = app_dir / "GTclawService.exe"
-        if service_exe.exists():
-            # Running from installed EXE — launch bundled service
+        if get_bot_pid():
+            self._refresh_status()
+            return  # already running
+
+        if getattr(sys, "frozen", False):
+            # Installed mode: GTclawService.exe lives alongside the dashboard EXE.
+            # It has all bot code bundled inside and runs it directly when given 'debug'.
+            service_exe = Path(sys.executable).parent / "GTclawService.exe"
             subprocess.Popen(
                 [str(service_exe), "debug"],
-                cwd=str(app_dir),
-                creationflags=subprocess.CREATE_NEW_CONSOLE,
+                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW,
             )
         else:
-            # Running from source — use venv python
-            python = str(app_dir / ".venv" / "Scripts" / "python.exe")
+            # Dev / source mode: launch bot.py with the venv python.
+            project_root = Path(__file__).parent
+            python = project_root / ".venv" / "Scripts" / "python.exe"
+            if not python.exists():
+                python = Path(sys.executable)
+            bot_script = project_root / "bot.py"
             subprocess.Popen(
-                [python, "service.py", "debug"],
-                cwd=str(app_dir),
-                creationflags=subprocess.CREATE_NEW_CONSOLE,
+                [str(python), str(bot_script)],
+                cwd=str(project_root),
+                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW,
             )
-        QTimer.singleShot(2500, self._refresh_status)
+        QTimer.singleShot(4000, self._refresh_status)
 
     def _stop_bot(self):
-        pid = get_bot_pid()
-        if pid:
-            subprocess.run(
-                ["taskkill", "/PID", str(pid), "/F"],
-                creationflags=0x08000000,
-            )
-            QTimer.singleShot(1500, self._refresh_status)
+        # Kill the bot process and any service wrapper
+        for name_filter in ["name='python.exe'", "name='GTclawService.exe'"]:
+            try:
+                result = subprocess.run(
+                    ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                     f"Get-CimInstance Win32_Process -Filter \"{name_filter}\" | "
+                     "Where-Object { $_.CommandLine -match 'bot\\.py|service\\.py' -and "
+                     "$_.CommandLine -notmatch 'dashboard' } | "
+                     "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"],
+                    capture_output=True, timeout=10,
+                    creationflags=0x08000000,
+                )
+            except Exception:
+                pass
+        subprocess.run(
+            ["taskkill", "/IM", "GTclawService.exe", "/F"],
+            capture_output=True, creationflags=0x08000000,
+        )
+        QTimer.singleShot(1500, self._refresh_status)
 
     def _restart_bot(self):
         self._stop_bot()

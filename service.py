@@ -83,16 +83,27 @@ if HAS_WIN32:
 
 
 def _run_debug():
-    """Run bot directly (no service manager) for testing."""
-    import subprocess, sys
-    proc = subprocess.Popen([sys.executable, BOT_SCRIPT], cwd=str(Path(__file__).parent))
-    print(f"Bot started (PID {proc.pid}). Press Ctrl+C to stop.")
-    try:
-        proc.wait()
-    except KeyboardInterrupt:
-        proc.terminate()
-        proc.wait()
-        print("Bot stopped.")
+    """Run bot directly (no service manager) for testing / daemon mode."""
+    if getattr(sys, 'frozen', False):
+        # Running as a compiled EXE: bot code is bundled inside this binary.
+        # Import and run it directly — no external python or bot.py file needed.
+        import asyncio
+        import bot as _bot
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        _bot.main()
+    else:
+        proc = subprocess.Popen(
+            [sys.executable, BOT_SCRIPT],
+            cwd=str(Path(__file__).parent),
+        )
+        print(f"Bot started (PID {proc.pid}). Press Ctrl+C to stop.")
+        try:
+            proc.wait()
+        except KeyboardInterrupt:
+            proc.terminate()
+            proc.wait()
+            print("Bot stopped.")
 
 
 if __name__ == "__main__":

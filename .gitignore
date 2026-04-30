@@ -26,9 +26,14 @@ config/config.json
 *.log
 build_*.log
 build_log.txt
+build_log_new.txt
+pyinstaller_out.txt
 *.db
 *.db-wal
 *.db-shm
+
+# Scratch / temp files
+query
 
 # OS artefacts
 .DS_Store
