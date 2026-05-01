@@ -18,9 +18,13 @@ async def generate_briefing(memory, claude) -> str:
     memories = memory.get_all_memories()
     due_reminders = memory.get_due_reminders()
 
-    # Mark reminders as sent
+    # Mark reminders as sent BEFORE building the briefing so check_reminders
+    # can't fire the same ones again while the briefing is being generated
     for r in due_reminders:
-        memory.mark_reminder_sent(r["id"])
+        try:
+            memory.mark_reminder_sent(r["id"])
+        except Exception:
+            pass
 
     # Build context for Claude
     memory_summary = ""

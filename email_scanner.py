@@ -1,8 +1,8 @@
-"""
-email_scanner.py — IMAP email scanner for bill/invoice/payment detection.
+"""email_scanner.py - IMAP email scanner for bill/invoice/payment and ADHD-related email detection.
 
 Connects to any IMAP server, scans recent emails, uses Claude (Haiku) to
-identify bills/invoices, and creates reminders in the database.
+identify bills/invoices and ADHD-related emails needing action,
+and creates reminders in the database.
 
 Usage:
     scanner = EmailScanner(db, claude, cfg)
@@ -25,6 +25,17 @@ _BILL_KEYWORDS = [
     "subscription", "renewal", "charged", "debit notice",
     "upcoming payment", "order confirmation", "your account",
     "account summary", "reminder:", "final notice",
+]
+
+# ADHD / mental-health / medical keywords
+_ADHD_KEYWORDS = [
+    "adhd", "adderall", "ritalin", "concerta", "vyvanse", "strattera",
+    "dexamphetamine", "methylphenidate", "lisdexamfetamine",
+    "psychiatr", "therapist", "counsell", "counselor",
+    "mental health", "adhd coach", "adhd support",
+    "appointment", "telehealth", "upcoming visit", "follow-up", "follow up",
+    "prescription", "refill", "medication review", "med check",
+    "assessment", "diagnosis", "clinic", "referral",
 ]
 
 
@@ -121,10 +132,12 @@ class EmailScanner:
 
     # ── Main scan ─────────────────────────────────────────────────────────────
 
-    async def scan(self) -> list[str]:
+    async def scan(self, query: str | None = None, days_back: int = 14) -> list[str]:
         """
-        Connect via IMAP, scan emails from the last 7 days, detect bills.
-        Returns a list of notification strings for each bill found.
+        Connect via IMAP, scan emails from the last `days_back` days (default 7).
+        If query is provided, uses IMAP TEXT search and a general-purpose extractor.
+        Otherwise runs the default bill + ADHD keyword scan.
+        Returns a list of notification strings for each item found.
         """
         cfg = self._cfg.config
         imap_server = cfg.get("email_imap_server", "").strip()
@@ -142,14 +155,23 @@ class EmailScanner:
             mail.login(email_addr, email_pass)
             mail.select("INBOX")
 
-            since_date = (datetime.now() - timedelta(days=7)).strftime("%d-%b-%Y")
-            _, data = mail.search(None, f'SINCE "{since_date}"')
+            since_date = (datetime.now() - timedelta(days=days_back)).strftime("%d-%b-%Y")
+
+            if query:
+                # Server-side search — let IMAP filter by text so we only fetch relevant emails
+                safe_query = query.replace('"', '')  # strip quotes to avoid IMAP injection
+                search_criteria = f'SINCE "{since_date}" TEXT "{safe_query}"'
+            else:
+                search_criteria = f'SINCE "{since_date}"'
+
+            _, data = mail.search(None, search_criteria)
             uids = data[0].split() if data[0] else []
-            logger.info("Email scan: %d messages in last 7 days", len(uids))
+            logger.info("Email scan: %d messages in last %d days", len(uids), days_back)
 
             for uid in uids[-50:]:          # cap at 50 most recent
                 uid_str = uid.decode()
-                if self._is_processed(uid_str, email_addr):
+                # Skip dedup only for automatic scans; always re-examine for explicit queries
+                if not query and self._is_processed(uid_str, email_addr):
                     continue
 
                 try:
@@ -164,23 +186,53 @@ class EmailScanner:
                 msg     = email.message_from_bytes(msg_data[0][1])
                 subject = _decode_str(msg.get("Subject", ""))
                 sender  = _decode_str(msg.get("From",    ""))
+                subject_lower = subject.lower()
+
+                if query:
+                    # Custom search: send every matched email through the general extractor
+                    body = _extract_text(msg)
+                    result = await self._extract_general_info(subject, sender, body, query)
+                    if result:
+                        reminder_msg, remind_at = result
+                        self._add_reminder(reminder_msg, remind_at)
+                        notifications.append(reminder_msg)
+                        action = "general_reminder_created"
+                        logger.info("General reminder created: %s", reminder_msg)
+                    else:
+                        action = "not_relevant"
+                    self._mark_processed(uid_str, email_addr, subject, action)
+                    continue
+
+                is_bill_match = any(kw in subject_lower for kw in _BILL_KEYWORDS)
+                is_adhd_match = any(kw in subject_lower for kw in _ADHD_KEYWORDS)
 
                 # Quick keyword check before spending a Claude call
-                if not any(kw in subject.lower() for kw in _BILL_KEYWORDS):
+                if not is_bill_match and not is_adhd_match:
                     self._mark_processed(uid_str, email_addr, subject, "ignored")
                     continue
 
-                body   = _extract_text(msg)
-                result = await self._extract_bill_info(subject, sender, body)
+                body = _extract_text(msg)
+                action = "not_relevant"
 
-                if result:
-                    reminder_msg, remind_at = result
-                    self._add_reminder(reminder_msg, remind_at)
-                    notifications.append(reminder_msg)
-                    self._mark_processed(uid_str, email_addr, subject, "reminder_created")
-                    logger.info("Bill reminder created: %s", reminder_msg)
-                else:
-                    self._mark_processed(uid_str, email_addr, subject, "not_a_bill")
+                if is_bill_match:
+                    result = await self._extract_bill_info(subject, sender, body)
+                    if result:
+                        reminder_msg, remind_at = result
+                        self._add_reminder(reminder_msg, remind_at)
+                        notifications.append(reminder_msg)
+                        action = "bill_reminder_created"
+                        logger.info("Bill reminder created: %s", reminder_msg)
+
+                if is_adhd_match:
+                    result = await self._extract_adhd_info(subject, sender, body)
+                    if result:
+                        reminder_msg, remind_at = result
+                        self._add_reminder(reminder_msg, remind_at)
+                        notifications.append(reminder_msg)
+                        action = "adhd_reminder_created"
+                        logger.info("ADHD reminder created: %s", reminder_msg)
+
+                self._mark_processed(uid_str, email_addr, subject, action)
 
         except imaplib.IMAP4.error as e:
             logger.error("IMAP error during email scan: %s", e)
@@ -260,4 +312,151 @@ Rules:
             remind_at = datetime.now() + timedelta(hours=2)
 
         reminder_msg = f"💰 Bill due: {desc}"
+        return reminder_msg, remind_at
+
+    async def _extract_general_info(
+        self, subject: str, sender: str, body: str, query: str
+    ) -> tuple[str, datetime] | None:
+        """
+        General-purpose extractor for user-specified search queries.
+        Returns (reminder_message, remind_at) or None if no action needed.
+        """
+        today = datetime.now().strftime("%Y-%m-%d")
+        prompt = f"""Today is {today}. The user searched their inbox for: "{query}"
+
+Email details:
+Subject: {subject}
+From: {sender}
+Body:
+{body[:1500]}
+
+Decide if this email is relevant to the search and needs the user's attention or a reminder.
+
+If it IS relevant and needs action or attention, reply with a single JSON object (no other text):
+{{"relevant": true, "description": "short summary max 80 chars of what needs attention",
+  "action_date": "YYYY-MM-DD or null", "days_before_reminder": 1,
+  "type": "reply_needed|appointment|payment|information|other"}}
+
+If it does NOT need action (already handled, automated notification, irrelevant), reply with:
+{{"relevant": false}}
+
+Rules:
+- reply_needed: someone is waiting for a reply \u2192 remind in 6 hours
+- appointment: has a date \u2192 remind 1 day before
+- payment: bill or invoice \u2192 remind 3 days before due
+- information/other: useful info \u2192 set action_date to today+1
+- If action_date is unknown use today+1.
+- Reply ONLY with the JSON object."""
+
+        raw = await self._claude.quick_extract(prompt)
+
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = "\n".join(cleaned.split("\n")[1:])
+        if cleaned.endswith("```"):
+            cleaned = "\n".join(cleaned.split("\n")[:-1])
+        cleaned = cleaned.strip()
+
+        try:
+            data = json.loads(cleaned)
+        except json.JSONDecodeError:
+            logger.debug("General extraction JSON parse failed: %s", raw[:200])
+            return None
+
+        if not data.get("relevant"):
+            return None
+
+        desc        = data.get("description") or subject[:80]
+        action_type = data.get("type", "other")
+        date_str    = data.get("action_date") or ""
+        days_before = max(0, int(data.get("days_before_reminder") or 1))
+
+        try:
+            action_date = datetime.strptime(date_str, "%Y-%m-%d")
+        except Exception:
+            action_date = datetime.now() + timedelta(days=1)
+
+        if action_type == "reply_needed":
+            remind_at = datetime.now() + timedelta(hours=6)
+        else:
+            remind_at = action_date - timedelta(days=days_before)
+            if remind_at < datetime.now():
+                remind_at = datetime.now() + timedelta(hours=2)
+
+        icons = {"reply_needed": "📬", "appointment": "📅", "payment": "💰", "information": "📋", "other": "📧"}
+        icon = icons.get(action_type, "📧")
+        reminder_msg = f"{icon} {desc}"
+        return reminder_msg, remind_at
+
+    async def _extract_adhd_info(
+        self, subject: str, sender: str, body: str
+    ) -> tuple[str, datetime] | None:
+        """
+        Ask Claude Haiku to detect ADHD-related emails needing action or reply.
+        Returns (reminder_message, remind_at) or None.
+        """
+        today = datetime.now().strftime("%Y-%m-%d")
+        prompt = f"""Today is {today}. Analyse the email below and decide if it relates to ADHD,
+mental health, psychiatry, therapy, ADHD coaching, medication, or medical appointments.
+
+Subject: {subject}
+From: {sender}
+Body:
+{body[:1500]}
+
+If this IS an ADHD/mental-health related email that needs action or a reply, reply with a single
+JSON object (no other text):
+{{"is_adhd": true, "type": "appointment|medication|reply_needed|information",
+  "description": "short label max 80 chars",
+  "action_date": "YYYY-MM-DD or null", "days_before_reminder": 1}}
+
+If it does NOT need action (newsletters, automated notifications you can safely ignore), reply with:
+{{"is_adhd": false}}
+
+Rules:
+- appointment: has a date/time for a visit or telehealth session → remind 1 day before
+- medication: prescription ready, refill due, med review → remind on action_date or today+1
+- reply_needed: someone is waiting for a response → remind in 6 hours (action_date = today)
+- information: useful info but no immediate action needed → is_adhd: false
+- If action_date is unknown, use today for reply_needed, else today+2.
+- Reply ONLY with the JSON object."""
+
+        raw = await self._claude.quick_extract(prompt)
+
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = "\n".join(cleaned.split("\n")[1:])
+        if cleaned.endswith("```"):
+            cleaned = "\n".join(cleaned.split("\n")[:-1])
+        cleaned = cleaned.strip()
+
+        try:
+            data = json.loads(cleaned)
+        except json.JSONDecodeError:
+            logger.debug("ADHD extraction JSON parse failed: %s", raw[:200])
+            return None
+
+        if not data.get("is_adhd"):
+            return None
+
+        desc        = data.get("description") or subject[:80]
+        action_type = data.get("type", "reply_needed")
+        date_str    = data.get("action_date") or ""
+        days_before = max(0, int(data.get("days_before_reminder") or 1))
+
+        try:
+            action_date = datetime.strptime(date_str, "%Y-%m-%d")
+        except Exception:
+            action_date = datetime.now() + timedelta(days=2)
+
+        if action_type == "reply_needed":
+            remind_at = datetime.now() + timedelta(hours=6)
+        else:
+            remind_at = action_date - timedelta(days=days_before)
+            if remind_at < datetime.now():
+                remind_at = datetime.now() + timedelta(hours=2)
+
+        icons = {"appointment": "📅", "medication": "💊", "reply_needed": "📬", "information": "📋"}
+        icon = icons.get(action_type, "🧠")
+        reminder_msg = f"{icon} ADHD: {desc}"
         return reminder_msg, remind_at

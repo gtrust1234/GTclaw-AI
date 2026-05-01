@@ -50,27 +50,36 @@ Write-Host "Installing / updating dependencies..." -ForegroundColor Yellow
 Write-Host "Building GTclawDashboard.exe..." -ForegroundColor Cyan
 & $pyinstaller `
     --noconfirm `
+    --clean `
     --onefile `
     --windowed `
     --name "GTclawDashboard" `
     --icon "$root\logo.ico" `
     --add-data "$root\logo.ico;." `
+    --paths "$root" `
+    --hidden-import "dashboard.tabs.code_editor" `
+    --hidden-import "config_manager" `
+    --hidden-import "terminal_executor" `
+    --hidden-import "anthropic" `
     --distpath "$root\dist" `
     --workpath "$root\build\dashboard" `
     (Join-Path $root "dashboard.py")
 
+if ($LASTEXITCODE -ne 0) { Write-Error "Dashboard PyInstaller failed (exit $LASTEXITCODE). Is GTclawDashboard.exe still running?"; exit 1 }
 if (-not (Test-Path "$root\dist\GTclawDashboard.exe")) { Write-Error "Dashboard build failed (EXE not found)"; exit 1 }
 
 # ── Build service EXE ─────────────────────────────────────────────────────────
 Write-Host "Building GTclawService.exe..." -ForegroundColor Cyan
 & $pyinstaller `
     --noconfirm `
+    --clean `
     --onefile `
     --windowed `
     --name "GTclawService" `
     --icon "$root\logo.ico" `
     --distpath "$root\dist" `
     --workpath "$root\build\service" `
+    --paths "$root" `
     --hidden-import "bot" `
     --hidden-import "briefing" `
     --hidden-import "memory" `

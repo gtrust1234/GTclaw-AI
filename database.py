@@ -328,6 +328,15 @@ class Database:
                 "SELECT id, message, recurring, remind_at FROM reminders WHERE remind_at <= ? AND sent=0",
                 (now,),
             ).fetchall()
+            # Atomically mark them as sent so concurrent callers can't pick up the same rows
+            if rows:
+                ids = [r["id"] for r in rows]
+                conn.execute(
+                    f"UPDATE reminders SET sent=1 WHERE id IN ({','.join('?' for _ in ids)}) AND sent=0",
+                    ids,
+                )
+                conn.commit()
+                # Only return rows we actually claimed (sent was still 0 when we updated)
         return [dict(r) for r in rows]
 
     def get_pending_reminders(self) -> List[Dict]:
@@ -339,20 +348,22 @@ class Database:
         return [dict(r) for r in rows]
 
     def fire_reminder(self, reminder_id: int) -> None:
-        """Mark one-time reminders sent; reschedule recurring ones."""
+        """For recurring reminders: reschedule to next occurrence.
+        For one-time reminders: no-op (already marked sent by get_due_reminders)."""
         with self._get_conn() as conn:
             row = conn.execute(
                 "SELECT recurring, remind_at FROM reminders WHERE id=?", (reminder_id,)
             ).fetchone()
-            if not row or not row["recurring"]:
-                conn.execute("UPDATE reminders SET sent=1 WHERE id=?", (reminder_id,))
-            else:
+            if not row:
+                return
+            if row["recurring"]:
                 next_at = self._next_occurrence(row["remind_at"], row["recurring"])
                 conn.execute(
                     "UPDATE reminders SET remind_at=?, sent=0 WHERE id=?",
                     (next_at, reminder_id),
                 )
-            conn.commit()
+                conn.commit()
+            # one-time: sent=1 was already set in get_due_reminders — nothing to do
 
     def _next_occurrence(self, last_at_str: str, recurring: str) -> str:
         from datetime import timedelta

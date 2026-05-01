@@ -20,6 +20,7 @@ from dashboard.tabs.conversations import ConversationsTab
 from dashboard.tabs.memory import MemoryTab
 from dashboard.tabs.commands import CommandsTab
 from dashboard.tabs.settings import SettingsTab
+from dashboard.tabs.code_editor import CodeEditorTab
 from config_manager import get_config
 
 
@@ -47,6 +48,7 @@ class DashboardWindow(QMainWindow):
         tabs.addTab(MemoryTab(), "🧠 Memory & Facts")
         tabs.addTab(CommandsTab(), "⌨ Commands")
         tabs.addTab(SettingsTab(), "⚙ Settings")
+        tabs.addTab(CodeEditorTab(), "🖊 Code Editor")
         layout.addWidget(tabs)
 
         # Status bar

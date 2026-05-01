@@ -219,6 +219,105 @@ _TOOLS = [
             },
         },
     },
+    {
+        "name": "scan_emails",
+        "description": (
+            "Search the user's email inbox for anything they ask about. "
+            "Pass a 'query' with whatever topic, keyword, sender, or subject to search for. "
+            "Without a query, runs the default scan for bills/invoices/payments and "
+            "ADHD-related emails (appointments, medication, psychiatrist, therapy, replies needed). "
+            "Always use this tool when the user asks you to check, search, or scan their email "
+            "for anything at all — bills, ADHD, appointments, a specific person, a topic, anything."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "What to search for in the inbox. Can be a topic, keyword, sender name, "
+                        "subject fragment, or any natural-language description. "
+                        "Examples: 'ADHD', 'Dr Smith', 'prescription refill', 'Netflix', 'tax'. "
+                        "Leave empty to run the default bill + ADHD scan."
+                    ),
+                },
+                "days_back": {
+                    "type": "integer",
+                    "description": (
+                        "How many days back to search. Default is 7. "
+                        "Use a larger value (e.g. 30, 60, 90) when the user mentions "
+                        "an older email or asks to search further back."
+                    ),
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "code_workspace",
+        "description": (
+            "Manage coding workspaces for the user (folders under their Documents). "
+            "ALWAYS call this tool FIRST whenever the user asks for any coding, "
+            "scripting, programming, file editing, or 'build me a…' work. "
+            "Workflow:\n"
+            "  1. action='list' — show the user the existing workspace folders so they can pick one.\n"
+            "  2. action='create', name='myproject' — create a new workspace folder.\n"
+            "  3. action='select', name='myproject' — set the active workspace; remembered across messages.\n"
+            "  4. action='tree' — show files in the current workspace.\n"
+            "After the user picks or creates one (action='select'), only THEN start writing files "
+            "using code_file. Never assume a workspace exists without listing first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "create", "select", "tree", "current"],
+                    "description": "What to do.",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Workspace folder name (for create/select). Plain name only, no slashes.",
+                },
+            },
+            "required": ["action"],
+        },
+    },
+    {
+        "name": "code_file",
+        "description": (
+            "Read, write, edit, or list files inside the currently selected coding workspace. "
+            "REQUIRES that code_workspace(action='select') has been called first. "
+            "Paths are relative to the workspace root."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["read", "write", "edit", "list", "delete"],
+                    "description": "Operation to perform.",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Relative path inside workspace (e.g. 'src/main.py'). For 'list', a folder.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Full file contents (for action='write').",
+                },
+                "old_text": {
+                    "type": "string",
+                    "description": "Exact text to replace (for action='edit'). Must appear once.",
+                },
+                "new_text": {
+                    "type": "string",
+                    "description": "Replacement text (for action='edit').",
+                },
+            },
+            "required": ["action"],
+        },
+    },
 ]
 
 
@@ -232,6 +331,7 @@ class ClaudeClient:
             )
         self.client = anthropic.Anthropic(api_key=api_key)
         self._db = Database()
+        self._email_scanner = None  # injected by bot.py after EmailScanner is created
 
     async def chat(
         self,
@@ -259,6 +359,25 @@ class ClaudeClient:
         ctypes.windll.shell32.SHGetFolderPathW(0, 5, 0, 0, _buf)
         files_dir = str(Path(_buf.value) / "GTclaw Documents")
         system += f"\nYour files folder (use this when creating any file): `{files_dir}`"
+
+        # Coding workflow rules — bot's Claude must use the workspace tools
+        ws_root = Path(_buf.value) / "GTclaw Workspaces"
+        current_ws = cfg.settings.get("current_code_workspace", "")
+        system += (
+            "\n\n--- Coding workflow ---\n"
+            "When the user asks for ANY coding, scripting, programming, app/site/script "
+            "creation, or wants you to edit/build files, you MUST use the `code_workspace` "
+            "and `code_file` tools (NOT run_command, NOT the documents folder).\n"
+            f"Workspaces live in: `{ws_root}`\n"
+            "Required first step on any new coding request: call `code_workspace(action='list')`, "
+            "then ask the user which workspace to use or to create a new one (call action='create' "
+            "or action='select'). Only after a workspace is selected may you use `code_file` to "
+            "read/write/edit files. The selected workspace is remembered across messages.\n"
+        )
+        if current_ws:
+            system += f"Current selected workspace: `{current_ws}`\n"
+        else:
+            system += "Current selected workspace: (none yet — list and ask the user)\n"
 
         if memory_context:
             system += f"\n\n---\nUser context:\n{memory_context}\n---"
@@ -290,7 +409,10 @@ class ClaudeClient:
             tool_results = []
             for block in response.content:
                 if block.type == "tool_use":
-                    tool_result = self._execute_tool(block)
+                    if block.name == "scan_emails":
+                        tool_result = await self._tool_scan_emails(block.input)
+                    else:
+                        tool_result = self._execute_tool(block)
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.id,
@@ -316,6 +438,40 @@ class ClaudeClient:
             self._log_usage(response, model, elapsed_ms, session_id, "chat+tool")
 
         return self._extract_text(response)
+
+    async def _tool_scan_emails(self, input_data: dict) -> str:
+        """Tool handler: run an email scan and return a summary for Claude."""
+        cfg = get_config()
+        data = input_data or {}
+        query = data.get("query", "").strip() or None
+        days_back = int(data.get("days_back") or 14)
+        days_back = max(1, min(days_back, 365))  # clamp to sane range
+        if not self._email_scanner:
+            return (
+                "Email monitoring is not configured yet. "
+                "Tell the user to open the Dashboard → Settings → Email Monitoring "
+                "and enter their IMAP server, email address, and password."
+            )
+        if not cfg.config.get("email_address", "").strip():
+            return (
+                "Email credentials are not set. "
+                "The user needs to fill in the Email Monitoring section in Dashboard → Settings."
+            )
+        try:
+            found = await self._email_scanner.scan(query=query, days_back=days_back)
+            if found:
+                lines = "\n".join(f"- {n}" for n in found)
+                label = f"for '{query}'" if query else "needing attention"
+                return (
+                    f"Found {len(found)} item(s) {label}. Reminders have been created:\n{lines}"
+                )
+            label = f"matching '{query}'" if query else "needing action"
+            return f"No emails {label} found in the last {days_back} day(s)."
+        except Exception as exc:
+            return (
+                f"Email scan failed: {str(exc)[:200]}. "
+                "Check the IMAP credentials in Dashboard → Settings → Email Monitoring."
+            )
 
     async def quick_extract(self, prompt: str) -> str:
         """Low-cost Haiku call for background extraction. Returns raw text."""
@@ -363,6 +519,10 @@ class ClaudeClient:
             return self._web_search(block.input)
         elif block.name == "get_weather":
             return self._get_weather(block.input)
+        elif block.name == "code_workspace":
+            return self._code_workspace(block.input)
+        elif block.name == "code_file":
+            return self._code_file(block.input)
         return f"Unknown tool: {block.name}"
 
     def _run_command(self, tool_input: dict) -> str:
@@ -607,6 +767,173 @@ class ClaudeClient:
             return "\n".join(lines)
         except Exception as e:
             return f"⚠️ Weather fetch failed: {e}"
+
+    # ── Code workspace tools ──────────────────────────────────────────────────
+
+    def _workspaces_root(self) -> Path:
+        _buf = ctypes.create_unicode_buffer(ctypes.wintypes.MAX_PATH)
+        ctypes.windll.shell32.SHGetFolderPathW(0, 5, 0, 0, _buf)  # Documents
+        root = Path(_buf.value) / "GTclaw Workspaces"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def _current_workspace_path(self) -> Optional[Path]:
+        cfg = get_config()
+        name = cfg.settings.get("current_code_workspace", "")
+        if not name:
+            return None
+        p = self._workspaces_root() / name
+        return p if p.is_dir() else None
+
+    def _code_workspace(self, tool_input: dict) -> str:
+        action = tool_input.get("action", "list")
+        root = self._workspaces_root()
+        cfg = get_config()
+
+        if action == "list":
+            entries = sorted([p.name for p in root.iterdir() if p.is_dir()])
+            current = cfg.settings.get("current_code_workspace", "")
+            lines = [f"📁 Workspaces folder: {root}"]
+            if entries:
+                lines.append("\nAvailable workspaces:")
+                for n in entries:
+                    marker = " ← current" if n == current else ""
+                    lines.append(f"  • {n}{marker}")
+            else:
+                lines.append("\n(No workspaces yet — ask the user to name one and call action='create'.)")
+            lines.append(
+                "\nNext step: ask the user which workspace to use, "
+                "or to create a new one. Then call action='select' with the chosen name."
+            )
+            return "\n".join(lines)
+
+        if action == "create":
+            name = (tool_input.get("name") or "").strip()
+            if not name or any(c in name for c in r'\/:*?"<>|'):
+                return "Error: provide a valid folder name (no slashes or special chars)."
+            target = root / name
+            try:
+                target.mkdir(parents=True, exist_ok=False)
+            except FileExistsError:
+                return f"Workspace '{name}' already exists. You can select it instead."
+            except Exception as exc:
+                return f"Error creating workspace: {exc}"
+            cfg.settings["current_code_workspace"] = name
+            cfg.save_settings()
+            return f"✅ Created and selected workspace '{name}' at {target}"
+
+        if action == "select":
+            name = (tool_input.get("name") or "").strip()
+            target = root / name
+            if not target.is_dir():
+                return f"Workspace '{name}' does not exist. Use action='list' to see options or action='create' to make it."
+            cfg.settings["current_code_workspace"] = name
+            cfg.save_settings()
+            return f"✅ Selected workspace '{name}'."
+
+        if action == "current":
+            current = cfg.settings.get("current_code_workspace", "")
+            if not current:
+                return "No workspace currently selected. Call action='list' first."
+            ws = self._current_workspace_path()
+            return f"Current workspace: {current} ({ws})" if ws else f"Stored workspace '{current}' is missing on disk."
+
+        if action == "tree":
+            ws = self._current_workspace_path()
+            if not ws:
+                return "No workspace selected. Call action='list' first."
+            lines = [f"📁 {ws.name}/"]
+            count = 0
+            skip = {".git", "__pycache__", "node_modules", ".venv", "venv"}
+            for p in sorted(ws.rglob("*")):
+                rel = p.relative_to(ws)
+                if any(part in skip or part.startswith(".") for part in rel.parts):
+                    continue
+                depth = len(rel.parts) - 1
+                indent = "  " * depth
+                suffix = "/" if p.is_dir() else ""
+                lines.append(f"{indent}{p.name}{suffix}")
+                count += 1
+                if count >= 80:
+                    lines.append("  … (truncated)")
+                    break
+            if count == 0:
+                lines.append("  (empty)")
+            return "\n".join(lines)
+
+        return f"Unknown workspace action: {action}"
+
+    def _code_file(self, tool_input: dict) -> str:
+        ws = self._current_workspace_path()
+        if not ws:
+            return "No workspace selected. Call code_workspace(action='list') first."
+        action = tool_input.get("action", "")
+        rel_path = (tool_input.get("path") or "").strip().lstrip("/\\")
+
+        # Guard against path escaping the workspace
+        try:
+            target = (ws / rel_path).resolve()
+            target.relative_to(ws.resolve())
+        except Exception:
+            return "Error: path must stay inside the workspace."
+
+        if action == "list":
+            base = target if target.is_dir() else ws
+            try:
+                items = sorted(base.iterdir(), key=lambda x: (x.is_file(), x.name.lower()))
+            except Exception as exc:
+                return f"Error listing: {exc}"
+            return "\n".join(("📁 " if i.is_dir() else "  ") + i.name for i in items) or "(empty)"
+
+        if action == "read":
+            if not target.is_file():
+                return f"Error: file does not exist: {rel_path}"
+            try:
+                txt = target.read_text(encoding="utf-8", errors="replace")
+            except Exception as exc:
+                return f"Error reading: {exc}"
+            return txt[:8000] + ("\n… [truncated]" if len(txt) > 8000 else "")
+
+        if action == "write":
+            content = tool_input.get("content", "")
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content, encoding="utf-8")
+            except Exception as exc:
+                return f"Error writing: {exc}"
+            return f"✅ Wrote {len(content)} chars to {rel_path}"
+
+        if action == "edit":
+            if not target.is_file():
+                return f"Error: file does not exist: {rel_path}"
+            old = tool_input.get("old_text", "")
+            new = tool_input.get("new_text", "")
+            try:
+                content = target.read_text(encoding="utf-8", errors="replace")
+                count = content.count(old)
+                if count == 0:
+                    return "Error: old_text not found."
+                if count > 1:
+                    return f"Error: old_text appears {count} times — must be unique."
+                target.write_text(content.replace(old, new, 1), encoding="utf-8")
+            except Exception as exc:
+                return f"Error editing: {exc}"
+            return f"✅ Edited {rel_path}"
+
+        if action == "delete":
+            try:
+                if target.is_dir():
+                    import shutil
+                    shutil.rmtree(target)
+                elif target.is_file():
+                    target.unlink()
+                else:
+                    return f"Nothing at {rel_path}"
+            except Exception as exc:
+                return f"Error deleting: {exc}"
+            return f"✅ Deleted {rel_path}"
+
+        return f"Unknown file action: {action}"
 
     def _extract_text(self, response) -> str:
         """Pull text from a Claude response object."""

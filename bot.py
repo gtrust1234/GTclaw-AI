@@ -47,6 +47,7 @@ memory = MemoryManager()
 claude = ClaudeClient()
 scheduler = AsyncIOScheduler()
 email_scanner = EmailScanner(memory.db, claude, cfg)
+claude._email_scanner = email_scanner  # give Claude the tool to trigger scans
 
 # ── User files folder ─────────────────────────────────────────────────────────
 import ctypes.wintypes, ctypes
@@ -304,13 +305,18 @@ async def check_reminders(app: Application) -> None:
     """Fire any due reminders and deliver them via Telegram."""
     due = memory.get_due_reminders()
     for r in due:
+        # Mark sent FIRST so a Telegram failure doesn't cause infinite repeats
+        try:
+            memory.mark_reminder_sent(r["id"])
+        except Exception as exc:
+            logger.error(f"Failed to mark reminder {r['id']} sent: {exc}")
+            continue
         try:
             await app.bot.send_message(
                 chat_id=cfg.get_telegram_user_id(),
                 text=f"⏰ *Reminder:* {r['message']}",
                 parse_mode="Markdown",
             )
-            memory.mark_reminder_sent(r["id"])
             logger.info(f"Reminder fired: {r['message']}")
         except Exception as exc:
             logger.error(f"Failed to send reminder {r['id']}: {exc}")

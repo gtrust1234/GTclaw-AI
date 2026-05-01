@@ -20,6 +20,9 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QRect
 from PyQt5.QtGui import QFont, QColor, QIcon, QPainter, QPen
 
+# Code-editor tab (file browser + multi-tab editor + AI + terminal)
+from dashboard.tabs.code_editor import CodeEditorTab
+
 # ── Cost bar chart widget ─────────────────────────────────────────────────────
 class CostBarChart(QWidget):
     """Simple daily cost bar chart using QPainter."""
@@ -86,133 +89,177 @@ sys.path.insert(0, str(_HERE))
 from database import Database
 from config_manager import ConfigManager
 
-# ── Colour palette (GitHub-dark inspired) ─────────────────────────────────────
-BG      = "#0d1117"
-CARD    = "#161b22"
-BORDER  = "#30363d"
-GREEN   = "#3fb950"
-RED     = "#f85149"
-YELLOW  = "#d29922"
-BLUE    = "#58a6ff"
-TEXT    = "#e6edf3"
-MUTED   = "#8b949e"
-ACCENT  = "#1f6feb"
+# ── Colour palette (modern dark) ──────────────────────────────────────────────
+BG        = "#0b0e14"
+SURFACE   = "#11151c"
+CARD      = "#161b25"
+CARD_HI   = "#1c2230"
+BORDER    = "#262d3d"
+BORDER_HI = "#3a4358"
+GREEN     = "#3fb950"
+GREEN_BG  = "#0f2a18"
+RED       = "#f85149"
+RED_BG    = "#2a0f12"
+YELLOW    = "#d29922"
+BLUE      = "#58a6ff"
+TEXT      = "#e6edf3"
+MUTED     = "#7d8590"
+ACCENT    = "#6366f1"
+ACCENT_HI = "#818cf8"
 
 STYLESHEET = f"""
 QMainWindow, QWidget {{
     background-color: {BG};
     color: {TEXT};
-    font-family: 'Segoe UI', Arial, sans-serif;
+    font-family: 'Segoe UI Variable', 'Segoe UI', 'Inter', Arial, sans-serif;
     font-size: 13px;
 }}
-QTabWidget::pane {{
-    border: 1px solid {BORDER};
-    background-color: {CARD};
-}}
+QTabWidget::pane {{ border: none; background-color: {BG}; top: 0px; }}
+QTabBar {{ background-color: {SURFACE}; border-bottom: 1px solid {BORDER}; }}
 QTabBar::tab {{
-    background-color: {BG};
+    background: transparent;
     color: {MUTED};
-    padding: 8px 22px;
+    padding: 10px 18px;
+    margin: 0;
     border: none;
     border-bottom: 2px solid transparent;
     font-size: 13px;
+    font-weight: 500;
 }}
-QTabBar::tab:selected {{
-    color: {TEXT};
-    border-bottom: 2px solid {BLUE};
-    background-color: {CARD};
-}}
-QTabBar::tab:hover {{
-    color: {TEXT};
-    background-color: {CARD};
-}}
+QTabBar::tab:selected {{ color: {TEXT}; border-bottom: 2px solid {ACCENT}; }}
+QTabBar::tab:hover:!selected {{ color: {TEXT}; background-color: {CARD}; }}
 QPushButton {{
     background-color: {ACCENT};
-    color: white;
-    border: none;
-    border-radius: 6px;
-    padding: 6px 14px;
-    font-size: 13px;
+    color: #ffffff;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    padding: 5px 12px;
+    min-height: 14px;
+    font-size: 12px;
     font-weight: 600;
+    letter-spacing: 0.1px;
 }}
-QPushButton:hover  {{ background-color: #388bfd; }}
-QPushButton:pressed {{ background-color: #1158c7; }}
-QPushButton:disabled {{ background-color: #21262d; color: {MUTED}; }}
-QPushButton[danger="true"]         {{ background-color: #b62324; }}
-QPushButton[danger="true"]:hover   {{ background-color: {RED}; }}
-QPushButton[success="true"]        {{ background-color: #238636; }}
-QPushButton[success="true"]:hover  {{ background-color: {GREEN}; }}
-QTableWidget {{
+QPushButton:hover  {{ background-color: {ACCENT_HI}; }}
+QPushButton:pressed {{ background-color: #4f46e5; padding-top: 6px; padding-bottom: 4px; }}
+QPushButton:focus {{ outline: none; border: 1px solid {ACCENT_HI}; }}
+QPushButton:disabled {{ background-color: {CARD}; color: {MUTED}; border: 1px solid {BORDER}; }}
+QPushButton[flat="true"] {{
     background-color: {CARD};
     color: {TEXT};
-    gridline-color: {BORDER};
     border: 1px solid {BORDER};
-    border-radius: 6px;
-    selection-background-color: {ACCENT};
-    alternate-background-color: #1c2128;
 }}
-QTableWidget::item {{ padding: 5px 8px; border: none; }}
+QPushButton[flat="true"]:hover {{ background-color: {CARD_HI}; border-color: {BORDER_HI}; }}
+QPushButton[flat="true"]:pressed {{ background-color: {SURFACE}; }}
+QPushButton[danger="true"]         {{ background-color: #da3633; color: #ffffff; }}
+QPushButton[danger="true"]:hover   {{ background-color: {RED}; }}
+QPushButton[danger="true"]:pressed {{ background-color: #b62324; }}
+QPushButton[success="true"]        {{ background-color: #2ea043; color: #ffffff; }}
+QPushButton[success="true"]:hover  {{ background-color: {GREEN}; }}
+QPushButton[success="true"]:pressed {{ background-color: #238636; }}
+QTableWidget {{
+    background-color: {SURFACE};
+    color: {TEXT};
+    gridline-color: transparent;
+    border: 1px solid {BORDER};
+    border-radius: 10px;
+    selection-background-color: {ACCENT};
+    alternate-background-color: {CARD};
+    outline: 0;
+}}
+QTableWidget::item {{ padding: 8px 10px; border: none; }}
+QTableWidget::item:hover {{ background-color: {CARD_HI}; }}
 QHeaderView::section {{
-    background-color: {BG};
+    background-color: {SURFACE};
     color: {MUTED};
-    padding: 8px;
+    padding: 10px;
     border: none;
     border-bottom: 1px solid {BORDER};
     font-weight: 600;
     font-size: 11px;
     text-transform: uppercase;
+    letter-spacing: 0.5px;
 }}
+QHeaderView {{ background-color: {SURFACE}; }}
+QTableCornerButton::section {{ background-color: {SURFACE}; border: none; border-bottom: 1px solid {BORDER}; }}
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit {{
-    background-color: {BG};
+    background-color: {SURFACE};
     color: {TEXT};
     border: 1px solid {BORDER};
-    border-radius: 6px;
-    padding: 6px 10px;
+    border-radius: 8px;
+    padding: 7px 11px;
+    selection-background-color: {ACCENT};
 }}
-QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{
-    border: 1px solid {BLUE};
+QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus, QTextEdit:focus {{
+    border: 1px solid {ACCENT};
 }}
+QComboBox::drop-down {{ border: none; width: 22px; }}
 QComboBox QAbstractItemView {{
     background-color: {CARD};
     color: {TEXT};
     selection-background-color: {ACCENT};
     border: 1px solid {BORDER};
+    border-radius: 6px;
+    padding: 4px;
 }}
-QScrollBar:vertical {{
-    background: {BG}; width: 8px;
-}}
-QScrollBar::handle:vertical {{
-    background: {BORDER}; border-radius: 4px; min-height: 20px;
-}}
+QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
+QScrollBar::handle:vertical {{ background: {BORDER}; border-radius: 5px; min-height: 24px; }}
+QScrollBar::handle:vertical:hover {{ background: {BORDER_HI}; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 2px; }}
+QScrollBar::handle:horizontal {{ background: {BORDER}; border-radius: 5px; min-width: 24px; }}
+QScrollBar::handle:horizontal:hover {{ background: {BORDER_HI}; }}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
 QGroupBox {{
+    background-color: {SURFACE};
     border: 1px solid {BORDER};
-    border-radius: 8px;
-    margin-top: 14px;
-    padding-top: 6px;
+    border-radius: 12px;
+    margin-top: 18px;
+    padding-top: 10px;
     color: {MUTED};
     font-size: 11px;
-    font-weight: 600;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
 }}
 QGroupBox::title {{
     subcontrol-origin: margin;
-    left: 12px;
-    padding: 0 6px;
+    left: 14px;
+    padding: 0 8px;
+    background-color: {SURFACE};
 }}
 QCheckBox {{ color: {TEXT}; spacing: 8px; }}
 QCheckBox::indicator {{
     width: 16px; height: 16px;
     border: 1px solid {BORDER};
-    border-radius: 3px;
-    background-color: {BG};
+    border-radius: 4px;
+    background-color: {SURFACE};
 }}
-QCheckBox::indicator:checked {{
-    background-color: {ACCENT};
-    border-color: {ACCENT};
-}}
+QCheckBox::indicator:hover {{ border-color: {ACCENT}; }}
+QCheckBox::indicator:checked {{ background-color: {ACCENT}; border-color: {ACCENT}; }}
 QMessageBox {{ background-color: {CARD}; color: {TEXT}; }}
-QMessageBox QPushButton {{ min-width: 70px; }}
-QScrollArea {{ border: none; }}
+QMessageBox QPushButton {{ min-width: 80px; }}
+QDialog {{ background-color: {BG}; color: {TEXT}; }}
+QScrollArea {{ border: none; background: transparent; }}
+QSplitter::handle {{ background-color: {BORDER}; }}
+QSplitter::handle:horizontal {{ width: 1px; }}
+QSplitter::handle:vertical {{ height: 1px; }}
+QToolTip {{
+    background-color: {CARD_HI};
+    color: {TEXT};
+    border: 1px solid {BORDER};
+    padding: 6px 10px;
+    border-radius: 6px;
+}}
+QMenu {{
+    background-color: {CARD};
+    color: {TEXT};
+    border: 1px solid {BORDER};
+    border-radius: 8px;
+    padding: 6px;
+}}
+QMenu::item {{ padding: 7px 18px; border-radius: 4px; }}
+QMenu::item:selected {{ background-color: {ACCENT}; color: white; }}
+QMenu::separator {{ height: 1px; background-color: {BORDER}; margin: 4px 8px; }}
 """
 
 
@@ -291,21 +338,25 @@ class StatCard(QFrame):
             QFrame {{
                 background-color: {CARD};
                 border: 1px solid {BORDER};
-                border-radius: 10px;
+                border-radius: 12px;
+            }}
+            QFrame:hover {{
+                background-color: {CARD_HI};
+                border-color: {BORDER_HI};
             }}
         """)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 14, 18, 14)
-        layout.setSpacing(6)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(8)
 
         self._title_lbl = QLabel(title.upper())
         self._title_lbl.setStyleSheet(
-            f"color:{MUTED}; font-size:11px; font-weight:600;"
+            f"color:{MUTED}; font-size:11px; font-weight:700; letter-spacing:0.6px;"
             "border:none; background:transparent;"
         )
         self._value_lbl = QLabel(value)
         self._value_lbl.setStyleSheet(
-            f"color:{color}; font-size:24px; font-weight:700;"
+            f"color:{color}; font-size:26px; font-weight:700;"
             "border:none; background:transparent;"
         )
         layout.addWidget(self._title_lbl)
@@ -314,7 +365,7 @@ class StatCard(QFrame):
     def set_value(self, value: str, color: str = TEXT):
         self._value_lbl.setText(value)
         self._value_lbl.setStyleSheet(
-            f"color:{color}; font-size:24px; font-weight:700;"
+            f"color:{color}; font-size:26px; font-weight:700;"
             "border:none; background:transparent;"
         )
 
@@ -573,43 +624,60 @@ class Dashboard(QMainWindow):
         self._build_commands_tab()
         self._build_conversations_tab()
         self._build_settings_tab()
+        self._build_code_editor_tab()
 
     def _build_header(self) -> QFrame:
         bar = QFrame()
-        bar.setFixedHeight(58)
-        bar.setStyleSheet(f"background-color:{CARD}; border-bottom:1px solid {BORDER};")
+        bar.setFixedHeight(64)
+        bar.setStyleSheet(
+            f"background-color:{SURFACE}; border:none; border-bottom:1px solid {BORDER};"
+        )
         lay = QHBoxLayout(bar)
-        lay.setContentsMargins(20, 0, 20, 0)
+        lay.setContentsMargins(24, 0, 24, 0)
+        lay.setSpacing(12)
 
-        title = QLabel("⚡  GTclaw Dashboard")
+        title = QLabel("GTclaw")
         title.setStyleSheet(
-            f"color:{TEXT}; font-size:16px; font-weight:700;"
+            f"color:{TEXT}; font-size:18px; font-weight:800; letter-spacing:-0.3px;"
+            "background:transparent; border:none;"
+        )
+        subtitle = QLabel("Dashboard")
+        subtitle.setStyleSheet(
+            f"color:{MUTED}; font-size:13px; font-weight:500;"
             "background:transparent; border:none;"
         )
         lay.addWidget(title)
+        lay.addWidget(subtitle)
         lay.addStretch()
 
-        self._status_dot   = QLabel("●")
+        # Status pill (single label that styles like a pill)
+        self._status_dot   = QLabel("")  # kept for backwards compat (hidden)
+        self._status_dot.hide()
         self._status_label = QLabel("Checking…")
-        for w in (self._status_dot, self._status_label):
-            w.setStyleSheet(f"color:{MUTED}; font-size:13px; background:transparent; border:none;")
-        lay.addWidget(self._status_dot)
+        self._status_label.setAlignment(Qt.AlignCenter)
+        self._status_label.setStyleSheet(
+            f"color:{MUTED}; background-color:{CARD}; border:1px solid {BORDER};"
+            "border-radius:14px; padding:5px 14px; font-size:12px; font-weight:600;"
+        )
         lay.addWidget(self._status_label)
-        lay.addSpacing(24)
+        lay.addSpacing(12)
 
-        self._btn_start   = QPushButton("▶  Start")
+        self._btn_start   = QPushButton("Start")
         self._btn_start.setProperty("success", "true")
-        self._btn_stop    = QPushButton("■  Stop")
+        self._btn_stop    = QPushButton("Stop")
         self._btn_stop.setProperty("danger", "true")
-        self._btn_restart = QPushButton("↺  Restart")
-        self._btn_refresh = QPushButton("⟳")
-        self._btn_refresh.setFixedSize(34, 34)
+        self._btn_restart = QPushButton("Restart")
+        self._btn_restart.setProperty("flat", "true")
+        self._btn_refresh = QPushButton("↻")
+        self._btn_refresh.setProperty("flat", "true")
+        self._btn_refresh.setFixedSize(30, 30)
         self._btn_refresh.setToolTip("Refresh now")
 
         for btn in (self._btn_start, self._btn_stop, self._btn_restart):
-            btn.setFixedHeight(34)
+            btn.setFixedHeight(30)
+            btn.setMinimumWidth(0)
             lay.addWidget(btn)
-            lay.addSpacing(6)
+        lay.addSpacing(4)
         lay.addWidget(self._btn_refresh)
 
         self._btn_start.clicked.connect(self._start_bot)
@@ -617,7 +685,7 @@ class Dashboard(QMainWindow):
         self._btn_restart.clicked.connect(self._restart_bot)
         self._btn_refresh.clicked.connect(self._refresh_all)
 
-        lay.addSpacing(16)
+        lay.addSpacing(12)
         self._refresh_label = QLabel("")
         self._refresh_label.setStyleSheet(
             f"color:{MUTED}; font-size:11px; background:transparent; border:none;"
@@ -1348,6 +1416,17 @@ class Dashboard(QMainWindow):
 
         self._tabs.addTab(scroll, "Settings")
 
+    # ── Code Editor ───────────────────────────────────────────────────────────
+
+    def _build_code_editor_tab(self):
+        try:
+            tab = CodeEditorTab()
+        except Exception as exc:
+            tab = QWidget()
+            lay = QVBoxLayout(tab)
+            lay.addWidget(QLabel(f"Code Editor failed to load: {exc}"))
+        self._tabs.addTab(tab, "🖊 Code Editor")
+
     # ─────────────────────────────────────────────────────────────────────────
     # Table factory
     # ─────────────────────────────────────────────────────────────────────────
@@ -1395,26 +1474,20 @@ class Dashboard(QMainWindow):
     def _refresh_status(self):
         pid = get_bot_pid()
         if pid:
-            for w in (self._status_dot, self._status_label):
-                w.setStyleSheet(
-                    f"color:{GREEN}; font-size:13px; background:transparent; border:none;"
-                )
-            self._status_dot.setStyleSheet(
-                f"color:{GREEN}; font-size:18px; background:transparent; border:none;"
+            self._status_label.setText(f"●  Running  ·  PID {pid}")
+            self._status_label.setStyleSheet(
+                f"color:{GREEN}; background-color:{GREEN_BG}; border:1px solid {GREEN};"
+                "border-radius:14px; padding:5px 14px; font-size:12px; font-weight:600;"
             )
-            self._status_label.setText(f"Bot running  (PID {pid})")
             self._btn_start.setEnabled(False)
             self._btn_stop.setEnabled(True)
             self._btn_restart.setEnabled(True)
         else:
-            for w in (self._status_dot, self._status_label):
-                w.setStyleSheet(
-                    f"color:{RED}; font-size:13px; background:transparent; border:none;"
-                )
-            self._status_dot.setStyleSheet(
-                f"color:{RED}; font-size:18px; background:transparent; border:none;"
+            self._status_label.setText("●  Stopped")
+            self._status_label.setStyleSheet(
+                f"color:{RED}; background-color:{RED_BG}; border:1px solid {RED};"
+                "border-radius:14px; padding:5px 14px; font-size:12px; font-weight:600;"
             )
-            self._status_label.setText("Bot stopped")
             self._btn_start.setEnabled(True)
             self._btn_stop.setEnabled(False)
             self._btn_restart.setEnabled(False)
@@ -1952,11 +2025,29 @@ if __name__ == "__main__":
     try:
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("GTclaw.Dashboard.1")
+        # Make Qt use per-monitor v2 DPI awareness so it renders crisp on HiDPI displays
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        pass
+
+    # High-DPI scaling — must be set BEFORE QApplication is created
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    try:
+        from PyQt5.QtGui import QGuiApplication
+        QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
+            Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+        )
     except Exception:
         pass
 
     app = QApplication(sys.argv)
     app.setApplicationName("GTclaw Dashboard")
+    # Use the Fusion style as a clean baseline (overrides ugly native Windows widgets)
+    try:
+        app.setStyle("Fusion")
+    except Exception:
+        pass
 
     # When frozen, bundled files land in sys._MEIPASS (temp dir), not next to the EXE.
     # Also check next to the EXE in case the installer placed a copy there.
