@@ -22,6 +22,7 @@ from PyQt5.QtGui import QFont, QColor, QIcon, QPainter, QPen
 
 # Code-editor tab (file browser + multi-tab editor + AI + terminal)
 from dashboard.tabs.code_editor import CodeEditorTab
+from dashboard.tabs.identity import IdentityTab
 
 # ── Cost bar chart widget ─────────────────────────────────────────────────────
 class CostBarChart(QWidget):
@@ -615,6 +616,7 @@ class Dashboard(QMainWindow):
         root.addWidget(self._tabs)
 
         self._build_overview_tab()
+        self._build_identity_tab()
         self._build_chat_tab()
         self._build_usage_tab()
         self._build_tasks_tab()
@@ -1426,6 +1428,17 @@ class Dashboard(QMainWindow):
             lay = QVBoxLayout(tab)
             lay.addWidget(QLabel(f"Code Editor failed to load: {exc}"))
         self._tabs.addTab(tab, "🖊 Code Editor")
+
+    # ── Identity ──────────────────────────────────────────────────────────────
+
+    def _build_identity_tab(self):
+        try:
+            tab = IdentityTab()
+        except Exception as exc:
+            tab = QWidget()
+            lay = QVBoxLayout(tab)
+            lay.addWidget(QLabel(f"Identity tab failed to load: {exc}"))
+        self._tabs.addTab(tab, "💓 Identity")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Table factory

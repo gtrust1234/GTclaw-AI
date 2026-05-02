@@ -19,8 +19,9 @@ dist/
 installer_output/
 
 # Sensitive config — users fill these in after install
-config/config.json
-.env
+config/config.jsonconfig/assistant_identity.json
+config/user_identity.json
+config/heartbeat.json.env
 
 # Logs and database
 *.log

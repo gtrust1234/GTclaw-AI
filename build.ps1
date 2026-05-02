@@ -58,6 +58,8 @@ Write-Host "Building GTclawDashboard.exe..." -ForegroundColor Cyan
     --add-data "$root\logo.ico;." `
     --paths "$root" `
     --hidden-import "dashboard.tabs.code_editor" `
+    --hidden-import "dashboard.tabs.identity" `
+    --hidden-import "identity_manager" `
     --hidden-import "config_manager" `
     --hidden-import "terminal_executor" `
     --hidden-import "anthropic" `
@@ -88,6 +90,8 @@ Write-Host "Building GTclawService.exe..." -ForegroundColor Cyan
     --hidden-import "claude_client" `
     --hidden-import "terminal_executor" `
     --hidden-import "email_scanner" `
+    --hidden-import "identity_manager" `
+    --hidden-import "proactive_agent" `
     (Join-Path $root "service.py")
 
 if (-not (Test-Path "$root\dist\GTclawService.exe")) { Write-Error "Service build failed (EXE not found)"; exit 1 }

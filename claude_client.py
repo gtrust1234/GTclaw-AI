@@ -14,6 +14,7 @@ import anthropic
 
 from config_manager import get_config
 from database import Database, calculate_cost
+from identity_manager import get_identity
 
 # Tools exposed to Claude
 _TOOLS = [
@@ -318,6 +319,96 @@ _TOOLS = [
             "required": ["action"],
         },
     },
+    {
+        "name": "manage_identity",
+        "description": (
+            "Read or modify your own identity (who you are) and the user's identity "
+            "(who they are, what they want help with). Use this freely as you grow and learn. "
+            "MUST be used during first-run onboarding to record the user's name, location, "
+            "preferences, and what they want help with — and to set your own name, voice, "
+            "personality_traits and values if the user wants to customise you. "
+            "After onboarding is complete you may also use it to refine yourself "
+            "(add_self_note) or to record new things you've learned about the user "
+            "(add_user_note, add_user_preference)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "view",
+                        "set_assistant_field",
+                        "set_user_field",
+                        "add_self_note",
+                        "add_user_note",
+                        "add_user_preference",
+                        "mark_user_initialized",
+                        "mark_assistant_initialized",
+                    ],
+                    "description": "Operation to perform.",
+                },
+                "field": {
+                    "type": "string",
+                    "description": (
+                        "Field name (for set_assistant_field / set_user_field). "
+                        "Assistant fields: name, voice, core_self, personality_traits, values. "
+                        "User fields: name, preferred_address, pronouns, location, timezone, "
+                        "occupation, about, relationship_to_assistant, what_i_want_help_with, "
+                        "communication_style."
+                    ),
+                },
+                "value": {
+                    "description": "New value (string, list, or object depending on field).",
+                },
+                "key": {
+                    "type": "string",
+                    "description": "Preference key (for add_user_preference).",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "Note text (for add_self_note / add_user_note).",
+                },
+            },
+            "required": ["action"],
+        },
+    },
+    {
+        "name": "memory_dive",
+        "description": (
+            "Deep-dive search across everything you remember: long-term memories, "
+            "structured user facts, past Telegram conversations, AND past code-editor "
+            "chats (per project folder). Use this whenever the user references something "
+            "from before, asks 'what did we talk about', 'remember when', 'what did I say "
+            "about X', or when YOU need more context than the recent history window provides. "
+            "Returns matching items with their dates and source so you can quote them back."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Keyword or phrase to search for (case-insensitive substring match). "
+                        "Leave empty to just list recent items in the chosen scope."
+                    ),
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["all", "memories", "facts", "conversations", "code_chats"],
+                    "description": (
+                        "Where to look. 'all' searches every store. "
+                        "'code_chats' = past chats from the dashboard Code Editor (per project)."
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results per scope (default 15, max 50).",
+                },
+            },
+            "required": [],
+        },
+    },
 ]
 
 
@@ -381,6 +472,12 @@ class ClaudeClient:
 
         if memory_context:
             system += f"\n\n---\nUser context:\n{memory_context}\n---"
+
+        # Inject self & user identity (the AI's body, brain, history, and who the user is)
+        try:
+            system += "\n\n" + get_identity().system_prompt_block()
+        except Exception:
+            pass
 
         messages = list(history)
         messages.append({"role": "user", "content": message})
@@ -523,7 +620,111 @@ class ClaudeClient:
             return self._code_workspace(block.input)
         elif block.name == "code_file":
             return self._code_file(block.input)
+        elif block.name == "manage_identity":
+            return self._manage_identity(block.input)
+        elif block.name == "memory_dive":
+            return self._memory_dive(block.input)
         return f"Unknown tool: {block.name}"
+
+    def _memory_dive(self, tool_input: dict) -> str:
+        """Deep search across memories, facts, telegram chats, and per-folder code chats."""
+        data = tool_input or {}
+        query = (data.get("query") or "").strip()
+        scope = (data.get("scope") or "all").lower()
+        try:
+            limit = int(data.get("limit") or 15)
+        except (TypeError, ValueError):
+            limit = 15
+        limit = max(1, min(limit, 50))
+
+        q_like = f"%{query.lower()}%" if query else "%"
+        out: list[str] = []
+
+        if scope in ("all", "memories"):
+            with self._db._get_conn() as conn:
+                rows = conn.execute(
+                    "SELECT content, category, created_at FROM memories "
+                    "WHERE LOWER(content) LIKE ? ORDER BY created_at DESC LIMIT ?",
+                    (q_like, limit),
+                ).fetchall()
+            if rows:
+                out.append(f"📌 Long-term memories ({len(rows)}):")
+                for r in rows:
+                    out.append(f"  [{r['created_at'][:10]}] ({r['category']}) {r['content']}")
+
+        if scope in ("all", "facts"):
+            with self._db._get_conn() as conn:
+                rows = conn.execute(
+                    "SELECT key, value, source, updated_at FROM user_facts "
+                    "WHERE LOWER(key) LIKE ? OR LOWER(value) LIKE ? "
+                    "ORDER BY updated_at DESC LIMIT ?",
+                    (q_like, q_like, limit),
+                ).fetchall()
+            if rows:
+                out.append(f"\n🪪 Structured facts ({len(rows)}):")
+                for r in rows:
+                    out.append(f"  {r['key']} = {r['value']}  (source: {r['source']})")
+
+        if scope in ("all", "conversations"):
+            with self._db._get_conn() as conn:
+                rows = conn.execute(
+                    "SELECT role, content, created_at FROM conversation_history "
+                    "WHERE session_id IS NULL AND LOWER(content) LIKE ? "
+                    "ORDER BY created_at DESC LIMIT ?",
+                    (q_like, limit),
+                ).fetchall()
+            if rows:
+                out.append(f"\n💬 Telegram conversations ({len(rows)}):")
+                for r in rows:
+                    snippet = r["content"][:200].replace("\n", " ")
+                    out.append(f"  [{r['created_at'][:16]}] {r['role']}: {snippet}")
+
+        if scope in ("all", "code_chats"):
+            with self._db._get_conn() as conn:
+                rows = conn.execute(
+                    "SELECT session_id, role, content, created_at FROM conversation_history "
+                    "WHERE session_id LIKE 'code:%' AND LOWER(content) LIKE ? "
+                    "ORDER BY created_at DESC LIMIT ?",
+                    (q_like, limit),
+                ).fetchall()
+            if rows:
+                out.append(f"\n🛠️ Code-editor chats ({len(rows)}):")
+                for r in rows:
+                    folder = r["session_id"].split(":", 1)[1] if ":" in r["session_id"] else "?"
+                    snippet = r["content"][:200].replace("\n", " ")
+                    out.append(f"  [{r['created_at'][:16]}] ({folder}) {r['role']}: {snippet}")
+
+        if not out:
+            return f"No matches for '{query}' in scope '{scope}'." if query \
+                else f"Nothing recorded yet in scope '{scope}'."
+        return "\n".join(out)
+
+    def _manage_identity(self, tool_input: dict) -> str:
+        """Let the AI introspect and modify its own + the user's identity files."""
+        ident = get_identity()
+        action = (tool_input or {}).get("action", "view")
+        try:
+            if action == "view":
+                return ident.system_prompt_block()
+            if action == "set_assistant_field":
+                return ident.set_assistant_field(tool_input["field"], tool_input.get("value"))
+            if action == "set_user_field":
+                return ident.set_user_field(tool_input["field"], tool_input.get("value"))
+            if action == "add_self_note":
+                return ident.add_self_note(tool_input.get("note", "").strip())
+            if action == "add_user_note":
+                return ident.add_user_note(tool_input.get("note", "").strip())
+            if action == "add_user_preference":
+                return ident.add_user_preference(tool_input["key"], tool_input.get("value"))
+            if action == "mark_user_initialized":
+                return ident.mark_user_initialized()
+            if action == "mark_assistant_initialized":
+                return ident.mark_assistant_initialized()
+            return f"Unknown manage_identity action: {action}"
+        except KeyError as e:
+            return f"Missing required field: {e}"
+        except Exception as e:
+            return f"manage_identity error: {e}"
 
     def _run_command(self, tool_input: dict) -> str:
         """Execute a run_command tool call; log result; return output string."""

@@ -1451,6 +1451,7 @@ class CodeEditorTab(QWidget):
         self._append_chat("user", msg)
         self._chat_history.append({"role": "user", "content": msg})
         self._save_chat()
+        self._log_to_db("user", msg)
 
         pane = self._current_pane()
         all_open = []
@@ -1481,6 +1482,19 @@ class CodeEditorTab(QWidget):
         if role == "assistant":
             self._chat_history.append({"role": "assistant", "content": text})
             self._save_chat()
+            self._log_to_db("assistant", text)
+
+    def _log_to_db(self, role: str, content: str) -> None:
+        """Persist code-editor chat into the central memory DB so the Telegram AI
+        can recall it later via the memory_dive tool. Per-folder session id keeps
+        each project separate."""
+        try:
+            from database import Database
+            folder = Path(self._cwd).name or "root"
+            session_id = f"code:{folder}"
+            Database().add_message(role, content, session_id=session_id)
+        except Exception:
+            pass
 
     def _on_ai_done(self, _success: bool) -> None:
         self._chat_input.setEnabled(True)

@@ -21,6 +21,7 @@ from dashboard.tabs.memory import MemoryTab
 from dashboard.tabs.commands import CommandsTab
 from dashboard.tabs.settings import SettingsTab
 from dashboard.tabs.code_editor import CodeEditorTab
+from dashboard.tabs.identity import IdentityTab
 from config_manager import get_config
 
 
@@ -43,6 +44,7 @@ class DashboardWindow(QMainWindow):
         tabs = QTabWidget()
         tabs.setDocumentMode(True)
         tabs.addTab(OverviewTab(), "📊 Overview")
+        tabs.addTab(IdentityTab(), "💓 Identity")
         tabs.addTab(UsageTab(), "💰 API Usage")
         tabs.addTab(ConversationsTab(), "💬 Conversations")
         tabs.addTab(MemoryTab(), "🧠 Memory & Facts")

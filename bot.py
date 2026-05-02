@@ -7,7 +7,7 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -26,6 +26,7 @@ from claude_client import ClaudeClient
 from briefing import generate_briefing
 from terminal_executor import execute_command
 from email_scanner import EmailScanner
+from identity_manager import get_identity
 
 # ── Bootstrap config (merges .env → config.json on first run) ────────────────
 cfg = get_config()
@@ -49,6 +50,16 @@ scheduler = AsyncIOScheduler()
 email_scanner = EmailScanner(memory.db, claude, cfg)
 claude._email_scanner = email_scanner  # give Claude the tool to trigger scans
 
+# Bring the AI to life: record this boot, host ("body"), and birth if first time.
+identity = get_identity()
+identity.boot()
+logger.info(
+    f"Heartbeat: boot #{identity.heartbeat.get('boot_count')} "
+    f"on {identity.heartbeat.get('host', {}).get('computer_name')} "
+    f"(born {identity.heartbeat.get('first_birth') or 'now'}). "
+    f"First-run onboarding pending: {identity.is_first_run()}"
+)
+
 # ── User files folder ─────────────────────────────────────────────────────────
 import ctypes.wintypes, ctypes
 _buf = ctypes.create_unicode_buffer(ctypes.wintypes.MAX_PATH)
@@ -61,7 +72,17 @@ logger.info(f"User files folder: {USER_FILES_DIR}")
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
 def is_authorised(update: Update) -> bool:
-    return update.effective_user.id == cfg.get_telegram_user_id()
+    incoming_id = update.effective_user.id if update and update.effective_user else None
+    expected_id = cfg.get_telegram_user_id()
+    if incoming_id != expected_id:
+        logger.warning(
+            f"REJECTED message from telegram user_id={incoming_id} "
+            f"(username={getattr(update.effective_user, 'username', None)}) "
+            f"— expected {expected_id}. "
+            f"Update your config telegram_user_id to {incoming_id} if this is you."
+        )
+        return False
+    return True
 
 
 # ── Commands ──────────────────────────────────────────────────────────────────
@@ -360,6 +381,75 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text(response)
 
 
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle photos (and image-as-document attachments) sent by the user."""
+    if not is_authorised(update):
+        return
+
+    msg = update.message
+    caption = (msg.caption or "").strip() or "What's in this image?"
+
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id, action="typing"
+    )
+
+    # Pick the largest available photo size, or accept image documents
+    file_obj = None
+    mime = "image/jpeg"
+    if msg.photo:
+        file_obj = await msg.photo[-1].get_file()
+    elif msg.document and (msg.document.mime_type or "").startswith("image/"):
+        file_obj = await msg.document.get_file()
+        mime = msg.document.mime_type or mime
+
+    if file_obj is None:
+        await msg.reply_text("Couldn't read that image, sorry.")
+        return
+
+    try:
+        import base64 as _b64
+        raw = await file_obj.download_as_bytearray()
+        b64 = _b64.b64encode(bytes(raw)).decode("ascii")
+    except Exception as exc:
+        logger.error(f"Failed to download photo: {exc}")
+        await msg.reply_text(f"⚠️ Couldn't download that image: {exc}")
+        return
+
+    multimodal_message = [
+        {
+            "type": "image",
+            "source": {"type": "base64", "media_type": mime, "data": b64},
+        },
+        {"type": "text", "text": caption},
+    ]
+
+    memories = memory.get_all_memories()
+    memory_context = ""
+    if memories:
+        memory_context = "Facts about the user:\n" + "\n".join(
+            f"- {m['content']}" for m in memories
+        )
+    history = memory.get_conversation_history()
+
+    # Vision needs the smart model
+    try:
+        response = await claude.chat(
+            message=multimodal_message,
+            history=history,
+            memory_context=memory_context,
+            use_smart=True,
+        )
+    except Exception as exc:
+        logger.exception("Vision call failed")
+        await msg.reply_text(f"⚠️ Vision error: {str(exc)[:200]}")
+        return
+
+    memory.add_to_history("user", f"[image] {caption}")
+    memory.add_to_history("assistant", response)
+    await _check_budget_alert(update, context)
+    await msg.reply_text(response)
+
+
 async def _maybe_extract_memory(user_msg: str, assistant_msg: str) -> None:
     """Ask Claude to extract memorable facts from every message exchange."""
     if not cfg.settings.get("auto_memory_extraction", True):
@@ -367,15 +457,17 @@ async def _maybe_extract_memory(user_msg: str, assistant_msg: str) -> None:
 
     prompt = (
         "Review this conversation exchange and extract ANYTHING worth saving long-term.\n"
-        "This includes:\n"
-        "- Facts about the user (preferences, goals, life, work, habits)\n"
-        "- Instructions the user gave about how the assistant should behave\n"
-        "- Identity/personality traits the user wants the assistant to have\n"
-        "- Important context the assistant should always remember\n\n"
-        "Return ONLY a JSON array of short factual strings, or [] if nothing is worth saving.\n\n"
+        "Return a single JSON object with three arrays:\n"
+        "  facts        — facts/preferences/instructions worth keeping in long-term memory\n"
+        "  user_notes   — short observations about WHO THE USER IS (personality, mood,\n"
+        "                 life events, evolving traits) — first-person from the assistant's POV\n"
+        "  self_notes   — short observations the ASSISTANT should remember ABOUT ITSELF\n"
+        "                 (decisions about its own voice/style, what it learned about how to\n"
+        "                 behave, its evolving personality). Phrase in first person ('I…').\n"
+        "Each array may be empty. Skip trivia. Each entry must be a short string.\n\n"
         f"User: {user_msg}\n"
         f"Assistant: {assistant_msg}\n\n"
-        'Format: ["fact 1", "fact 2"] or []'
+        'Format: {"facts": [...], "user_notes": [...], "self_notes": [...]}'
     )
     raw = await claude.quick_extract(prompt)
     # Strip markdown code fences if Claude wraps the JSON
@@ -384,11 +476,22 @@ async def _maybe_extract_memory(user_msg: str, assistant_msg: str) -> None:
         cleaned = cleaned.split("```")[-2] if "```" in cleaned[3:] else cleaned
         cleaned = cleaned.lstrip("json").strip().strip("`").strip()
     try:
-        facts = json.loads(cleaned)
-        for fact in facts:
+        data = json.loads(cleaned)
+        if isinstance(data, list):  # backwards compat with old format
+            data = {"facts": data, "user_notes": [], "self_notes": []}
+        for fact in data.get("facts", []) or []:
             if isinstance(fact, str) and len(fact) > 10:
                 memory.add_memory(fact, category="auto_extracted")
                 logger.info(f"Memory saved: {fact[:80]}")
+        ident = identity
+        for note in data.get("user_notes", []) or []:
+            if isinstance(note, str) and len(note) > 5:
+                ident.add_user_note(note)
+                logger.info(f"User note: {note[:80]}")
+        for note in data.get("self_notes", []) or []:
+            if isinstance(note, str) and len(note) > 5:
+                ident.add_self_note(note)
+                logger.info(f"Self note: {note[:80]}")
     except Exception as e:
         logger.debug(f"Memory extraction parse failed: {e} | raw={raw[:200]}")
 
@@ -453,6 +556,25 @@ def main() -> None:
             seconds=60,
             args=[application],
         )
+        # Heartbeat — keep the AI's pulse alive, increment uptime every minute.
+        scheduler.add_job(
+            lambda: identity.pulse(60), "interval",
+            seconds=60,
+        )
+        # Proactive self-reflection — let the AI think on its own and decide
+        # whether to message the user, set reminders, do research, etc.
+        try:
+            from proactive_agent import reflect_and_act
+            interval_min = int(cfg.settings.get("proactive_interval_minutes", 90))
+            scheduler.add_job(
+                reflect_and_act, "interval",
+                minutes=max(15, interval_min),
+                args=[application],
+                next_run_time=datetime.now() + timedelta(minutes=5),
+            )
+            logger.info("Proactive reflection scheduled every %d min.", interval_min)
+        except Exception as exc:
+            logger.error("Could not schedule proactive reflection: %s", exc)
         # Email scan — only add job if credentials are present
         if cfg.config.get("email_address"):
             scan_hours = int(cfg.config.get("email_scan_interval_hours", 3))
@@ -484,6 +606,7 @@ def main() -> None:
     app.add_handler(CommandHandler("reminders", list_reminders))
     app.add_handler(CommandHandler("emails", emails_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.PHOTO | (filters.Document.IMAGE), handle_photo))
 
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 

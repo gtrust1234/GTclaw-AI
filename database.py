@@ -298,14 +298,17 @@ class Database:
             conn.commit()
 
     def _trim_history(self, keep: int = 100) -> None:
+        """Only trim the default (NULL session_id) Telegram chat. Per-folder code-editor
+        sessions are preserved for long-term recall by the AI's memory_dive tool."""
         with self._get_conn() as conn:
             count = conn.execute(
-                "SELECT COUNT(*) FROM conversation_history"
+                "SELECT COUNT(*) FROM conversation_history WHERE session_id IS NULL"
             ).fetchone()[0]
             if count > keep:
                 conn.execute(
                     "DELETE FROM conversation_history WHERE id IN "
-                    "(SELECT id FROM conversation_history ORDER BY created_at ASC LIMIT ?)",
+                    "(SELECT id FROM conversation_history WHERE session_id IS NULL "
+                    "ORDER BY created_at ASC LIMIT ?)",
                     (count - keep,),
                 )
                 conn.commit()
